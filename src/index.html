@@ -156,6 +156,12 @@
         } catch(e) {}
       }
 
+      function escapeHtml(value) {
+        const element = document.createElement('span');
+        element.textContent = String(value);
+        return element.innerHTML;
+      }
+
       function renderSharedFiles(files) {
         const list = document.getElementById('sharedList');
         if (!files || files.length === 0) {
@@ -164,7 +170,7 @@
         }
         list.innerHTML = files.map(f => `
           <div class="flex items-center justify-between bg-slate-900 p-2 rounded-xl border border-slate-800">
-            <span class="text-xs truncate max-w-[140px] text-slate-200">${f.name}</span>
+            <span class="text-xs truncate max-w-[140px] text-slate-200">${escapeHtml(f.name)}</span>
             <button onclick="removeFile('${f.id}')" class="text-rose-400 hover:text-rose-300 text-xs font-bold px-2 py-1">✕</button>
           </div>
         `).join('');
@@ -185,7 +191,7 @@
         }
         list.innerHTML = devices.map(d => `
           <div class="flex items-center justify-between bg-slate-900 p-2 rounded-xl border border-slate-800">
-            <span class="text-xs truncate max-w-[140px] text-slate-300 font-mono">${d}</span>
+            <span class="text-xs truncate max-w-[140px] text-slate-300 font-mono">${escapeHtml(d)}</span>
             <button onclick="revokeDevice('${d}')" class="text-rose-400 hover:text-rose-300 text-[10px] font-semibold">Revocar</button>
           </div>
         `).join('');
