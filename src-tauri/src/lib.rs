@@ -508,7 +508,7 @@ fn content_disposition_value(filename: &str) -> String {
             }
         })
         .collect();
-    let fallback = fallback.trim_matches([' ', '.']);
+    let fallback = fallback.trim_matches(|ch| ch == ' ' || ch == '.');
     let fallback = if fallback.is_empty() { "download" } else { fallback };
 
     let mut encoded = String::new();
@@ -722,7 +722,7 @@ mod upload_filename_tests {
     #[test]
     fn content_disposition_encodes_unicode_and_blocks_header_injection() {
         let value = content_disposition_value("foto \"ñ\r\nX-Evil: yes.png");
-        assert!(value.starts_with("attachment; filename=\"foto ___X-Evil_ yes.png\"; filename*=UTF-8''"));
+        assert!(value.starts_with("attachment; filename=\"foto ____X-Evil_ yes.png\"; filename*=UTF-8''"));
         assert!(!value.contains("\r"));
         assert!(!value.contains("\n"));
         assert!(value.contains("%C3%B1"));
