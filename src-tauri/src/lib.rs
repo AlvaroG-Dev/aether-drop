@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::collections::HashMap;
+use rand::Rng;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
@@ -30,6 +31,7 @@ struct AppState {
     trusted_devices: Arc<RwLock<Vec<String>>>,
     clipboard_text: Arc<RwLock<String>>,
     session_tokens: Arc<RwLock<HashMap<String, String>>>,
+    auth_failures: Arc<RwLock<(u32, std::time::Instant)>>,
 }
 
 #[derive(Serialize)]
@@ -142,7 +144,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                 <div class="bg-slate-900 border border-slate-800 p-6 rounded-3xl w-full max-w-sm text-center shadow-2xl">
                     <h2 class="text-xl font-bold text-sky-400 mb-2">Autenticación Requerida</h2>
                     <p class="text-xs text-slate-400 mb-4">Introduce el PIN de 4 dígitos que aparece en la pantalla de tu PC.</p>
-                    <input type="password" id="pinInput" maxlength="4" placeholder="••••" class="w-full bg-slate-950 border border-slate-700 text-center text-2xl tracking-widest py-3 rounded-xl mb-4 text-white focus:outline-none focus:border-sky-500">
+                    <input type="password" id="pinInput" maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="••••••" class="w-full bg-slate-950 border border-slate-700 text-center text-2xl tracking-widest py-3 rounded-xl mb-4 text-white focus:outline-none focus:border-sky-500">
                     <button onclick="verifyPin()" class="w-full bg-sky-600 hover:bg-sky-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-sky-900/30">Conectar</button>
                     <p id="pinError" class="text-xs text-rose-400 mt-3 hidden">PIN incorrecto.</p>
                 </div>
@@ -235,8 +237,8 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     const pinError = document.getElementById('pinError');
                     const pin = pinInput.value.trim();
 
-                    if (pin.length !== 4) {
-                        pinError.innerText = "El PIN debe tener 4 dígitos.";
+                    if (pin.length !== 6 || !/^\\d{6}$/.test(pin)) {
+                        pinError.innerText = "El PIN debe tener 6 dígitos.";
                         pinError.classList.remove('hidden');
                         return;
                     }
@@ -412,8 +414,20 @@ async fn require_auth(
 async fn check_session() -> StatusCode { StatusCode::OK }
 
 async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinRequest>) -> impl IntoResponse {
-    if payload.pin != state.pin || payload.device_id.len() > 64 || payload.device_id.is_empty() || !payload.device_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return StatusCode::UNAUTHORIZED.into_response();
+    {
+        let mut failures = state.auth_failures.write().await;
+        if failures.1.elapsed() >= std::time::Duration::from_secs(60) {
+            *failures = (0, std::time::Instant::now());
+        }
+        if failures.0 >= 10 {
+            return (StatusCode::TOO_MANY_REQUESTS, "Too many PIN attempts; wait one minute").into_response();
+        }
+        if payload.pin != state.pin || payload.device_id.len() > 64 || payload.device_id.is_empty() || !payload.device_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            failures.0 += 1;
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        failures.0 = 0;
+        failures.1 = std::time::Instant::now();
     }
     let mut devices = state.trusted_devices.write().await;
     if !devices.contains(&payload.device_id) {
@@ -542,7 +556,7 @@ fn start_local_server(state: AppState) {
                 .route("/clipboard", get(get_clipboard).post(set_clipboard))
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
                 .with_state(state)
-                .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024));
+                .layer(DefaultBodyLimit::max(2 * 1024 * 1024 * 1024));
 
             let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
@@ -554,7 +568,7 @@ fn start_local_server(state: AppState) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let default_dir = dirs::download_dir().unwrap_or_else(|| PathBuf::from("."));
-    let pin = format!("{:04}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos() % 10000);
+    let pin = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000));
 
     let state = AppState {
         save_dir: Arc::new(RwLock::new(default_dir)),
@@ -563,6 +577,7 @@ pub fn run() {
         trusted_devices: Arc::new(RwLock::new(Vec::new())),
         clipboard_text: Arc::new(RwLock::new(String::new())),
         session_tokens: Arc::new(RwLock::new(HashMap::new())),
+        auth_failures: Arc::new(RwLock::new((0, std::time::Instant::now()))),
     };
 
     start_local_server(state.clone());
