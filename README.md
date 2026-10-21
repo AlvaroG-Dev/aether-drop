@@ -15,7 +15,7 @@ AetherDrop is an early-stage, Rust + Tauri desktop app for moving files between 
 - Trusted-device list and revocation checks for active session tokens.
 - Multiple-file upload UI with progress reporting.
 - Filename validation and no-overwrite file creation on upload.
-- Animated desktop device bridge that reacts to whether a device is paired.
+- Animated desktop and mobile device-bridge bubbles; mobile packets animate during an actual upload.
 - Reduced-motion support for the bridge animation.
 
 ## Planned product
