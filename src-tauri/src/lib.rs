@@ -20,7 +20,7 @@ use serde::Serialize;
 #[derive(Clone)]
 struct AppState {
     save_dir: Arc<RwLock<PathBuf>>,
-    pc_files: Arc<RwLock<Vec<(String, PathBuf)>>>, // (uuid, ruta_real)
+    pc_files: Arc<RwLock<Vec<(String, PathBuf)>>>,
 }
 
 #[derive(Serialize)]
@@ -76,6 +76,11 @@ async fn remove_pc_file(id: String, state: tauri::State<'_, AppState>) -> Result
     get_shared_files_internal(&state).await
 }
 
+#[tauri::command]
+async fn get_shared_files(state: tauri::State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    get_shared_files_internal(&state).await
+}
+
 async fn get_shared_files_internal(state: &AppState) -> Result<Vec<serde_json::Value>, String> {
     let files = state.pc_files.read().await;
     let list: Vec<_> = files.iter().map(|(id, path)| {
@@ -85,7 +90,6 @@ async fn get_shared_files_internal(state: &AppState) -> Result<Vec<serde_json::V
     Ok(list)
 }
 
-// Interfaz Web Móvil (PWA)
 async fn serve_ui() -> axum::response::Html<&'static str> {
     axum::response::Html(r###"
         <!DOCTYPE html>
@@ -101,7 +105,6 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                 <h1 class="text-2xl font-bold text-sky-400 mb-1">AetherDrop</h1>
                 <p class="text-slate-400 text-sm mb-6">Transferencia ultra-rápida sin límites</p>
 
-                <!-- Subir al PC -->
                 <div class="mb-8">
                     <label class="block w-full bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white font-semibold py-3 px-4 rounded-xl cursor-pointer transition shadow-lg shadow-sky-900/30">
                         Enviar Archivo o Vídeo al PC
@@ -112,7 +115,6 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
 
                 <hr class="border-slate-800 mb-6">
 
-                <!-- Descargar desde el PC -->
                 <div class="text-left">
                     <h2 class="text-sm font-semibold text-slate-300 mb-3 uppercase tracking-wider">Archivos compartidos por el PC</h2>
                     <div id="fileList" class="space-y-2 max-h-48 overflow-y-auto pr-1">
@@ -132,7 +134,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     formData.append('file', file);
                     
                     status.style.color = "#38bdf8";
-                    status.innerText = "Subiendo " + file.name + " (puede tardar si es muy pesado)...";
+                    status.innerText = "Subiendo " + file.name + "...";
                     
                     try {
                         const response = await fetch('/upload', { method: 'POST', body: formData });
@@ -175,7 +177,6 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
     "###)
 }
 
-// Receptor streaming: Soporta archivos gigantes sin desbordar la memoria RAM
 async fn handle_upload(State(state): State<AppState>, mut multipart: Multipart) -> &'static str {
     while let Ok(Some(mut field)) = multipart.next_field().await {
         let file_name = field.file_name()
@@ -193,7 +194,6 @@ async fn handle_upload(State(state): State<AppState>, mut multipart: Multipart) 
                 }
             }
             let _ = file.flush().await;
-            println!("Archivo masivo guardado correctamente en: {:?}", filepath);
         }
     }
     "OK"
@@ -232,12 +232,11 @@ fn start_local_server(state: AppState) {
                 .route("/files", get(list_pc_files))
                 .route("/download/:id", get(download_pc_file))
                 .with_state(state)
-                .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024)) // Límite ampliado a 10 GB
+                .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024))
                 .layer(CorsLayer::permissive());
 
             let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            println!("🚀 Servidor Axum optimizado corriendo en puerto 8080");
             let _ = axum::serve(listener, app).await;
         });
     });
@@ -261,7 +260,8 @@ pub fn run() {
             get_connection_info,
             set_save_directory,
             share_pc_file,
-            remove_pc_file
+            remove_pc_file,
+            get_shared_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
