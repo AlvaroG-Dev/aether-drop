@@ -411,26 +411,53 @@ async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinReque
 }
 
 // Receptor streaming multipart compatible con múltiples archivos en simultáneo
-async fn handle_upload(State(state): State<AppState>, mut multipart: Multipart) -> &'static str {
+async fn handle_upload(State(state): State<AppState>, mut multipart: Multipart) -> (StatusCode, &'static str) {
     while let Ok(Some(mut field)) = multipart.next_field().await {
-        let file_name = field.file_name()
-            .map(|s| s.to_string())
+        let supplied_name = field.file_name()
+            .map(|s| s.replace('\\', "/"))
             .unwrap_or_else(|| format!("archivo_{}.bin", uuid::Uuid::new_v4()));
-        
+        // Never trust a client-provided path. Keep only a short, plain filename.
+        let file_name = std::path::Path::new(&supplied_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty() && *name != "." && *name != ".." && name.len() <= 240)
+            .map(str::to_owned);
+        let Some(file_name) = file_name else {
+            return (StatusCode::BAD_REQUEST, "Invalid filename");
+        };
+
         let dir = state.save_dir.read().await.clone();
-        let _ = tokio::fs::create_dir_all(&dir).await;
+        if tokio::fs::create_dir_all(&dir).await.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Cannot prepare destination");
+        }
         let filepath = dir.join(&file_name);
 
-        if let Ok(mut file) = tokio::fs::File::create(&filepath).await {
-            while let Ok(Some(chunk)) = field.try_next().await {
-                if file.write_all(&chunk).await.is_err() {
-                    break;
+        // create_new prevents an upload from silently overwriting an existing file.
+        let mut file = match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&filepath).await {
+            Ok(file) => file,
+            Err(_) => return (StatusCode::CONFLICT, "File already exists or cannot be created"),
+        };
+        loop {
+            match field.try_next().await {
+                Ok(Some(chunk)) => {
+                    if file.write_all(&chunk).await.is_err() {
+                        let _ = tokio::fs::remove_file(&filepath).await;
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed writing upload");
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = tokio::fs::remove_file(&filepath).await;
+                    return (StatusCode::BAD_REQUEST, "Invalid upload stream");
                 }
             }
-            let _ = file.flush().await;
+        }
+        if file.flush().await.is_err() {
+            let _ = tokio::fs::remove_file(&filepath).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed finalizing upload");
         }
     }
-    "OK"
+    (StatusCode::OK, "OK")
 }
 
 async fn list_pc_files(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
