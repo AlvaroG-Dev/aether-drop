@@ -247,8 +247,8 @@
       list.innerHTML = files.map(f => `
         <div class="file-item">
           <span class="item-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10z"/><path d="M13 3v7h7"/></svg></span>
-          <span class="item-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
-          <button onclick="removeFile('${escapeHtml(f.id)}')" class="item-action" aria-label="Quitar ${escapeHtml(f.name)}" title="Quitar archivo">Quitar</button>
+          <span class="item-name">${escapeHtml(f.name)}</span>
+          <button onclick="removeFile('${escapeHtml(f.id)}')" class="item-action" aria-label="Quitar archivo" title="Quitar archivo">Quitar</button>
         </div>
       `).join('');
     }
@@ -271,7 +271,7 @@
         <div class="device-item">
           <span class="item-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10 18h4"/></svg></span>
           <span class="item-name" title="${escapeHtml(d)}">${escapeHtml(d)}</span>
-          <button onclick="revokeDevice('${escapeHtml(d)}')" class="item-action" aria-label="Revocar ${escapeHtml(d)}">Revocar</button>
+          <button onclick="revokeDevice('${escapeHtml(d)}')" class="item-action" aria-label="Revocar dispositivo">Revocar</button>
         </div>
       `).join('');
     }
