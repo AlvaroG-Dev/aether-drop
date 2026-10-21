@@ -143,7 +143,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
             <div id="pinModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
                 <div class="bg-slate-900 border border-slate-800 p-6 rounded-3xl w-full max-w-sm text-center shadow-2xl">
                     <h2 class="text-xl font-bold text-sky-400 mb-2">Autenticación Requerida</h2>
-                    <p class="text-xs text-slate-400 mb-4">Introduce el PIN de 4 dígitos que aparece en la pantalla de tu PC.</p>
+                    <p class="text-xs text-slate-400 mb-4">Introduce el PIN de 6 dígitos que aparece en la pantalla de tu PC.</p>
                     <input type="password" id="pinInput" maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="••••••" class="w-full bg-slate-950 border border-slate-700 text-center text-2xl tracking-widest py-3 rounded-xl mb-4 text-white focus:outline-none focus:border-sky-500">
                     <button onclick="verifyPin()" class="w-full bg-sky-600 hover:bg-sky-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-sky-900/30">Conectar</button>
                     <p id="pinError" class="text-xs text-rose-400 mt-3 hidden">PIN incorrecto.</p>
@@ -155,7 +155,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                 <div class="flex items-center justify-between mb-6">
                     <div>
                         <h1 class="text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">AetherDrop</h1>
-                        <p class="text-[11px] text-slate-400">Conexión Segura E2EE</p>
+                        <p class="text-[11px] text-slate-400">Dispositivo vinculado</p>
                     </div>
                     <span class="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">● En línea</span>
                 </div>
@@ -237,7 +237,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     const pinError = document.getElementById('pinError');
                     const pin = pinInput.value.trim();
 
-                    if (pin.length !== 6 || !/^\\d{6}$/.test(pin)) {
+                    if (pin.length !== 6 || !/^\d{6}$/.test(pin)) {
                         pinError.innerText = "El PIN debe tener 6 dígitos.";
                         pinError.classList.remove('hidden');
                         return;
