@@ -135,7 +135,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>AetherDrop - Secure PWA</title>
-            <script src="https://cdn.tailwindcss.com"></script>
+            
             <style>
               :root{color-scheme:light;--bg:#f6f7fb;--surface:#fff;--ink:#182033;--muted:#778096;--line:#e8ebf2;--accent:#5b61e8;--accent-dark:#474dcc;--green:#17876b;--green-soft:#eaf8f2;--red:#c34b63}
               *{box-sizing:border-box}
@@ -362,11 +362,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                 function showToast(message, isSuccess) {
                     const toast = document.getElementById('toast');
                     toast.innerText = message;
-                    toast.className = `mt-3 text-xs font-semibold p-2.5 rounded-xl border ${
-                        isSuccess 
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                        : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                    }`;
+                    toast.className = 'toast ' + (isSuccess ? 'success' : 'error');
                     toast.classList.remove('hidden');
                     setTimeout(() => toast.classList.add('hidden'), 5000);
                 }
@@ -430,13 +426,13 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         const files = await res.json();
                         const list = document.getElementById('fileList');
                         if (files.length === 0) {
-                            list.innerHTML = '<p class="text-xs text-slate-500 text-center py-2">No hay archivos disponibles.</p>';
+                            list.innerHTML = '<p class="mobile-empty">No hay archivos disponibles.</p>';
                             return;
                         }
                         list.innerHTML = files.map(f => `
-                            <div class="flex items-center justify-between bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
-                                <span class="text-xs truncate max-w-[200px] text-slate-200">${escapeHtml(f.name)}</span>
-                                <a href="/download/${f.id}" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-lg font-medium transition shadow">Descargar</a>
+                            <div class="mobile-file-item">
+                                <span class="mobile-file-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+                                <a href="/download/${f.id}" class="download-link">Descargar</a>
                             </div>
                         `).join('');
                     } catch(e) {}
