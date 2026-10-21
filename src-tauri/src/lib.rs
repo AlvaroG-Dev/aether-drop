@@ -215,10 +215,18 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
 
                 async function checkAuth() {
                     const token = localStorage.getItem('aether_token');
-                    if (token && token !== 'true') {
+                    if (!token || token === 'true') {
+                        localStorage.removeItem('aether_token');
+                        return;
+                    }
+                    try {
+                        const response = await fetch('/session', { headers: authHeaders() });
+                        if (!response.ok) throw new Error('Session expired');
                         document.getElementById('pinModal').classList.add('hidden');
                         document.getElementById('mainApp').classList.remove('hidden');
                         startSync();
+                    } catch (_) {
+                        localStorage.removeItem('aether_token');
                     }
                 }
 
@@ -395,8 +403,10 @@ async fn require_auth(
     next.run(request).await
 }
 
+async fn check_session() -> StatusCode { StatusCode::OK }
+
 async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinRequest>) -> impl IntoResponse {
-    if payload.pin != state.pin || payload.device_id.len() > 128 || payload.device_id.is_empty() {
+    if payload.pin != state.pin || payload.device_id.len() > 64 || payload.device_id.is_empty() || !payload.device_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let mut devices = state.trusted_devices.write().await;
@@ -519,6 +529,7 @@ fn start_local_server(state: AppState) {
             let app = Router::new()
                 .route("/", get(serve_ui))
                 .route("/auth", post(handle_auth))
+                .route("/session", get(check_session))
                 .route("/upload", post(handle_upload))
                 .route("/files", get(list_pc_files))
                 .route("/download/:id", get(download_pc_file))
