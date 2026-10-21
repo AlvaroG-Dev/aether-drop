@@ -431,7 +431,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         }
                         list.innerHTML = files.map(f => `
                             <div class="mobile-file-item">
-                                <span class="mobile-file-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+                                <span class="mobile-file-name">${escapeHtml(f.name)}</span>
                                 <a href="/download/${f.id}" class="download-link">Descargar</a>
                             </div>
                         `).join('');
