@@ -477,6 +477,33 @@ async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinReque
     (StatusCode::OK, Json(serde_json::json!({ "token": token }))).into_response()
 }
 
+fn sanitize_upload_filename(input: &str) -> Option<String> {
+    let normalized = input.replace('\\', "/");
+    std::path::Path::new(&normalized)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty() && *name != "." && *name != ".." && name.len() <= 240)
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod upload_filename_tests {
+    use super::sanitize_upload_filename;
+
+    #[test]
+    fn strips_unix_and_windows_path_components() {
+        assert_eq!(sanitize_upload_filename("../../photo.png"), Some("photo.png".to_owned()));
+        assert_eq!(sanitize_upload_filename(r"C:\\Users\\demo\\video.mp4"), Some("video.mp4".to_owned()));
+    }
+
+    #[test]
+    fn rejects_empty_traversal_and_overlong_names() {
+        assert_eq!(sanitize_upload_filename(""), None);
+        assert_eq!(sanitize_upload_filename(".."), None);
+        assert_eq!(sanitize_upload_filename(&"x".repeat(241)), None);
+    }
+}
+
 // Receptor streaming multipart compatible con múltiples archivos en simultáneo
 async fn handle_upload(State(state): State<AppState>, mut multipart: Multipart) -> (StatusCode, &'static str) {
     while let Ok(Some(mut field)) = multipart.next_field().await {
@@ -484,12 +511,7 @@ async fn handle_upload(State(state): State<AppState>, mut multipart: Multipart) 
             .map(|s| s.replace('\\', "/"))
             .unwrap_or_else(|| format!("archivo_{}.bin", uuid::Uuid::new_v4()));
         // Never trust a client-provided path. Keep only a short, plain filename.
-        let file_name = std::path::Path::new(&supplied_name)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty() && *name != "." && *name != ".." && name.len() <= 240)
-            .map(str::to_owned);
-        let Some(file_name) = file_name else {
+        let Some(file_name) = sanitize_upload_filename(&supplied_name) else {
             return (StatusCode::BAD_REQUEST, "Invalid filename");
         };
 
