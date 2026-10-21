@@ -514,7 +514,47 @@ fn content_disposition_value(filename: &str) -> String {
     let mut encoded = String::new();
     for byte in filename.as_bytes() {
         if byte.is_ascii_alphanumeric()
-            || matches!(*byte, b'!' | b'#' | b'
+            || matches!(*byte, b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'|' | b'~')
+        {
+            encoded.push(*byte as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(&mut encoded, "%{:02X}", byte);
+        }
+    }
+
+    format!("attachment; filename=\"{}\"; filename*=UTF-8''{}", fallback, encoded)
+}
+
+#[cfg(test)]
+mod upload_filename_tests {
+    use super::{content_disposition_value, sanitize_upload_filename};
+
+    #[test]
+    fn strips_unix_and_windows_path_components() {
+        assert_eq!(sanitize_upload_filename("../../photo.png"), Some("photo.png".to_owned()));
+        assert_eq!(sanitize_upload_filename(r"C:\Users\demo\video.mp4"), Some("video.mp4".to_owned()));
+    }
+
+    #[test]
+    fn rejects_empty_traversal_control_characters_and_unsafe_suffixes() {
+        assert_eq!(sanitize_upload_filename(""), None);
+        assert_eq!(sanitize_upload_filename(".."), None);
+        assert_eq!(sanitize_upload_filename("bad\nname.txt"), None);
+        assert_eq!(sanitize_upload_filename("name.txt "), None);
+        assert_eq!(sanitize_upload_filename("name."), None);
+        assert_eq!(sanitize_upload_filename(&"x".repeat(241)), None);
+    }
+
+    #[test]
+    fn content_disposition_encodes_unicode_and_blocks_header_injection() {
+        let value = content_disposition_value("foto \"ñ\r\nX-Evil: yes.png");
+        assert!(value.starts_with("attachment; filename=\"foto ____X-Evil_ yes.png\"; filename*=UTF-8''"));
+        assert!(!value.contains("\r"));
+        assert!(!value.contains("\n"));
+        assert!(value.contains("%C3%B1"));
+    }
+}
 
 // Streaming multipart receiver. Malformed multipart envelopes must never look successful.
 async fn handle_upload(State(state): State<AppState>, mut multipart: Multipart) -> (StatusCode, &'static str) {
