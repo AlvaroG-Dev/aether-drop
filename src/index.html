@@ -2,49 +2,73 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <title>AetherDrop - Panel Pro</title>
+    <title>AetherDrop - Pro Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
   <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col items-center justify-center p-6 select-none">
-    <div class="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-8 text-center flex flex-col items-center">
-      <h1 class="text-3xl font-extrabold text-sky-400 mb-1">AetherDrop</h1>
-      <p class="text-slate-400 text-sm mb-6">Escanea el QR con tu móvil o comparte archivos bidireccionalmente</p>
+    <div class="w-full max-w-xl bg-slate-900/90 backdrop-blur-2xl border border-slate-800/80 rounded-3xl shadow-2xl p-8 text-center flex flex-col items-center">
       
-      <!-- Contenedor QR y URL -->
-      <div class="flex gap-6 items-center w-full mb-6 bg-slate-950/50 p-4 rounded-2xl border border-slate-800">
-        <div class="bg-white p-2 rounded-xl shrink-0">
-          <img id="qrImage" alt="QR" class="w-32 h-32 block rounded" />
+      <!-- Cabecera -->
+      <div class="flex items-center justify-between w-full mb-6">
+        <div class="text-left">
+          <h1 class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">AetherDrop</h1>
+          <p class="text-xs text-slate-400">Panel de Control Pro</p>
         </div>
-        <div class="text-left overflow-hidden">
-          <p class="text-xs text-slate-400 font-semibold mb-1">ENLACE LOCAL:</p>
-          <div class="font-mono text-emerald-400 text-xs break-all bg-slate-900 p-2 rounded border border-slate-800" id="serverUrl">
-            Cargando...
-          </div>
+        <div class="bg-indigo-600/10 border border-indigo-500/20 px-3.5 py-1.5 rounded-2xl text-left">
+          <p class="text-[10px] uppercase font-bold text-indigo-400">PIN de Seguridad</p>
+          <p id="pinDisplay" class="text-lg font-mono font-bold text-white tracking-widest">••••</p>
         </div>
       </div>
 
-      <!-- Selector de Carpeta de Destino -->
-      <div class="w-full bg-slate-800/40 border border-slate-700/50 p-3.5 rounded-xl flex items-center justify-between text-left mb-6">
+      <!-- QR y URL -->
+      <div class="flex gap-6 items-center w-full mb-6 bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80">
+        <div class="bg-white p-2.5 rounded-2xl shadow-inner shrink-0">
+          <img id="qrImage" alt="QR" class="w-32 h-32 block rounded-xl" />
+        </div>
+        <div class="text-left overflow-hidden flex-1">
+          <p class="text-xs text-slate-400 font-semibold mb-1">ENLACE LOCAL DE RED:</p>
+          <div class="font-mono text-emerald-400 text-xs break-all bg-slate-900 p-2.5 rounded-xl border border-slate-800 mb-2" id="serverUrl">
+            Cargando...
+          </div>
+          <p class="text-[11px] text-slate-500">Los dispositivos en la misma red Wi-Fi detectarán este host automáticamente.</p>
+        </div>
+      </div>
+
+      <!-- Selector de Carpeta -->
+      <div class="w-full bg-slate-800/30 border border-slate-700/40 p-4 rounded-2xl flex items-center justify-between text-left mb-6 shadow-sm">
         <div class="overflow-hidden mr-2">
-          <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Carpeta de recepción:</p>
+          <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Carpeta de recepción activa:</p>
           <p id="savePath" class="text-xs text-slate-200 truncate mt-0.5 font-mono">Cargando...</p>
         </div>
-        <button onclick="changeDirectory()" class="bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white text-xs px-3 py-2 rounded-lg font-semibold transition shrink-0 shadow">
-          Cambiar
+        <button onclick="changeDirectory()" class="bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white text-xs px-4 py-2.5 rounded-xl font-semibold transition shrink-0 shadow-lg shadow-sky-900/20">
+          Modificar
         </button>
       </div>
 
-      <!-- Sección PC -> Móvil (Archivos Compartidos) -->
-      <div class="w-full text-left">
-        <div class="flex items-center justify-between mb-2">
-          <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Archivos para enviar al móvil</h2>
-          <button onclick="shareFile()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-lg font-semibold transition shadow">
-            + Añadir Archivo
-          </button>
+      <!-- Sección Dual: Archivos Compartidos y Dispositivos Confiables -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full text-left">
+        
+        <!-- Archivos PC -> Móvil -->
+        <div class="bg-slate-950/40 p-4 rounded-2xl border border-slate-800/80 flex flex-col">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Envío al Móvil</h2>
+            <button onclick="shareFile()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] px-2.5 py-1.5 rounded-lg font-semibold transition shadow">+ Añadir</button>
+          </div>
+          <div id="sharedList" class="space-y-2 max-h-32 overflow-y-auto flex-1 pr-1">
+            <p class="text-xs text-slate-500 text-center py-4">Sin archivos compartidos.</p>
+          </div>
         </div>
-        <div id="sharedList" class="space-y-2 max-h-36 overflow-y-auto bg-slate-950 p-3 rounded-xl border border-slate-800">
-          <p class="text-xs text-slate-500 text-center py-2">Ningún archivo compartido desde el PC.</p>
+
+        <!-- Dispositivos de Confianza -->
+        <div class="bg-slate-950/40 p-4 rounded-2xl border border-slate-800/80 flex flex-col">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Dispositivos Confiables</h2>
+          </div>
+          <div id="deviceList" class="space-y-2 max-h-32 overflow-y-auto flex-1 pr-1">
+            <p class="text-xs text-slate-500 text-center py-4">Ningún dispositivo vinculado.</p>
+          </div>
         </div>
+
       </div>
     </div>
 
@@ -58,10 +82,11 @@
           document.getElementById('serverUrl').innerText = info.url;
           document.getElementById('qrImage').src = info.qr_base64;
           document.getElementById('savePath').innerText = info.save_path;
+          document.getElementById('pinDisplay').innerText = info.pin;
         } catch (e) {
           document.getElementById('serverUrl').innerText = "Error detectando red";
         }
-        loadSharedFiles();
+        loadData();
       }
 
       window.changeDirectory = async () => {
@@ -85,23 +110,44 @@
         renderSharedFiles(files);
       }
 
-      async function loadSharedFiles() {
+      window.revokeDevice = async (deviceId) => {
+        const devices = await invoke('revoke_trusted_device', { deviceId });
+        renderDevices(devices);
+      }
+
+      async function loadData() {
         try {
           const files = await invoke('get_shared_files');
           renderSharedFiles(files);
+          const devices = await invoke('get_trusted_devices');
+          renderDevices(devices);
         } catch(e) {}
       }
 
       function renderSharedFiles(files) {
         const list = document.getElementById('sharedList');
         if (!files || files.length === 0) {
-          list.innerHTML = '<p class="text-xs text-slate-500 text-center py-2">Ningún archivo compartido desde el PC.</p>';
+          list.innerHTML = '<p class="text-xs text-slate-500 text-center py-4">Sin archivos compartidos.</p>';
           return;
         }
         list.innerHTML = files.map(f => `
-          <div class="flex items-center justify-between bg-slate-900 p-2 rounded-lg border border-slate-800">
-            <span class="text-xs truncate max-w-[260px] text-slate-200">${f.name}</span>
+          <div class="flex items-center justify-between bg-slate-900 p-2 rounded-xl border border-slate-800">
+            <span class="text-xs truncate max-w-[140px] text-slate-200">${f.name}</span>
             <button onclick="removeFile('${f.id}')" class="text-rose-400 hover:text-rose-300 text-xs font-bold px-2 py-1">✕</button>
+          </div>
+        `).join('');
+      }
+
+      function renderDevices(devices) {
+        const list = document.getElementById('deviceList');
+        if (!devices || devices.length === 0) {
+          list.innerHTML = '<p class="text-xs text-slate-500 text-center py-4">Ningún dispositivo vinculado.</p>';
+          return;
+        }
+        list.innerHTML = devices.map(d => `
+          <div class="flex items-center justify-between bg-slate-900 p-2 rounded-xl border border-slate-800">
+            <span class="text-xs truncate max-w-[140px] text-slate-300 font-mono">${d}</span>
+            <button onclick="revokeDevice('${d}')" class="text-rose-400 hover:text-rose-300 text-[10px] font-semibold">Revocar</button>
           </div>
         `).join('');
       }
