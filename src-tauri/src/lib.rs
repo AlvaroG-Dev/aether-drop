@@ -137,96 +137,149 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
             <title>AetherDrop - Secure PWA</title>
             <script src="https://cdn.tailwindcss.com"></script>
             <style>
-              .transfer-bridge{position:relative;min-height:118px;overflow:hidden;border:1px solid rgba(71,85,105,.55);border-radius:22px;background:radial-gradient(ellipse at center,rgba(56,189,248,.13),rgba(2,6,23,.2) 70%)}
-              .transfer-device{position:absolute;top:24px;width:46px;height:46px;border-radius:15px;display:grid;place-items:center;font-size:21px;background:linear-gradient(145deg,#0f172a,#1e293b);border:1px solid rgba(125,211,252,.35);z-index:2}
-              .transfer-device.phone{left:calc(50% - 104px)}.transfer-device.pc{right:calc(50% - 104px)}
-              .transfer-orb{position:absolute;left:50%;top:47px;transform:translate(-50%,-50%);width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:white;background:linear-gradient(135deg,#38bdf8,#6366f1);box-shadow:0 0 20px rgba(56,189,248,.35);z-index:2}
-              .transfer-line{position:absolute;left:calc(50% - 82px);right:calc(50% - 82px);top:47px;height:2px;background:linear-gradient(90deg,rgba(56,189,248,.08),rgba(56,189,248,.65),rgba(129,140,248,.65),rgba(129,140,248,.08))}
-              .transfer-packet{position:absolute;left:calc(50% - 75px);top:44px;width:7px;height:7px;border-radius:50%;background:#7dd3fc;box-shadow:0 0 12px #38bdf8;opacity:0}
-              .transfer-bridge.transferring .transfer-packet{opacity:1;animation:transfer-flight 1.3s linear infinite}
-              .transfer-bridge.transferring .transfer-packet.p2{animation-delay:.43s}.transfer-bridge.transferring .transfer-packet.p3{animation-delay:.86s}
-              .transfer-bridge.paired .transfer-orb,.transfer-bridge.transferring .transfer-orb{animation:transfer-glow 1.8s ease-in-out infinite}
-              .transfer-caption{position:absolute;bottom:11px;left:8px;right:8px;text-align:center;font-size:11px;color:#cbd5e1}
-              @keyframes transfer-flight{0%{transform:translateX(0) scale(.65);opacity:0}15%{opacity:1}85%{opacity:1}100%{transform:translateX(150px) scale(1.15);opacity:0}}
-              @keyframes transfer-glow{0%,100%{box-shadow:0 0 15px rgba(56,189,248,.3)}50%{box-shadow:0 0 30px rgba(56,189,248,.8)}}
-              @media(prefers-reduced-motion:reduce){.transfer-bridge *{animation:none!important}.transfer-packet{display:none}}
+              :root{color-scheme:light;--bg:#f6f7fb;--surface:#fff;--ink:#182033;--muted:#778096;--line:#e8ebf2;--accent:#5b61e8;--accent-dark:#474dcc;--green:#17876b;--green-soft:#eaf8f2;--red:#c34b63}
+              *{box-sizing:border-box}
+              body.mobile-app{margin:0;min-height:100vh;padding:24px 16px;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.01em;display:flex;justify-content:center;align-items:center}
+              button,input,textarea{font:inherit}
+              button{cursor:pointer}
+              button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #a5a7ff;outline-offset:2px}
+              .mobile-shell{width:100%;max-width:480px;margin:auto}
+              .mobile-brand{display:flex;align-items:center;gap:11px;margin:0 0 18px 2px}
+              .mobile-mark{width:40px;height:40px;border-radius:13px;background:var(--accent);display:grid;place-items:center;color:white;box-shadow:0 7px 16px #5b61e82b}
+              .mobile-mark svg{width:22px;height:22px}
+              .mobile-brand-name{font-size:19px;font-weight:780;letter-spacing:-.055em}
+              .mobile-brand-sub{font-size:12px;color:var(--muted);margin-top:1px}
+              .mobile-card{background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:22px;box-shadow:0 12px 34px rgba(25,35,66,.06)}
+              .mobile-heading{font-size:20px;letter-spacing:-.045em;font-weight:760;margin:0}
+              .mobile-muted{font-size:12px;color:var(--muted);margin:7px 0 0}
+              .mobile-topline{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:18px}
+              .online-pill{display:inline-flex;align-items:center;gap:7px;border:1px solid #d9f0e7;background:#f0faf6;color:var(--green);border-radius:999px;padding:7px 10px;font-size:10px;font-weight:750;white-space:nowrap}
+              .online-pill:before{content:"";width:6px;height:6px;border-radius:50%;background:#22a77d}
+              .transfer-bridge{position:relative;min-height:154px;overflow:hidden;border:1px solid #e9ebf5;border-radius:17px;background:radial-gradient(ellipse at center,#f0f0ff 0%,#fafaff 52%,#fff 100%);margin:20px 0}
+              .transfer-device{position:absolute;top:44%;width:44px;height:52px;border-radius:13px;display:grid;place-items:center;background:#fff;border:1px solid #e1e5ef;color:#70788c;z-index:2;box-shadow:0 7px 20px #2730520b}
+              .transfer-device svg{width:21px;height:21px;stroke:currentColor}
+              .transfer-device.phone{left:calc(50% - 102px)}.transfer-device.pc{right:calc(50% - 102px)}
+              .transfer-orb{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);width:38px;height:38px;border-radius:14px;display:grid;place-items:center;color:white;background:linear-gradient(145deg,#777bf6,#5359df);box-shadow:0 7px 20px #5b61e83b;z-index:2}
+              .transfer-orb svg{width:19px;height:19px}
+              .transfer-line{position:absolute;left:calc(50% - 76px);right:calc(50% - 76px);top:44%;height:1px;background:linear-gradient(90deg,#d5d7ff,#8d91f4,#d5d7ff)}
+              .transfer-packet{position:absolute;left:calc(50% - 70px);top:calc(44% - 3px);width:6px;height:6px;border-radius:50%;background:#6569ed;box-shadow:0 0 0 4px #6569ed1a;opacity:0}
+              .transfer-bridge.transferring .transfer-packet{opacity:1;animation:transfer-flight 1.5s linear infinite}
+              .transfer-bridge.transferring .transfer-packet.p2{animation-delay:.5s}.transfer-bridge.transferring .transfer-packet.p3{animation-delay:1s}
+              .transfer-bridge.paired .transfer-orb,.transfer-bridge.transferring .transfer-orb{animation:transfer-glow 2.2s ease-in-out infinite}
+              .transfer-caption{position:absolute;bottom:13px;left:8px;right:8px;text-align:center;font-size:11px;color:#596176}
+              .mobile-section{margin-top:20px}
+              .mobile-section-title{font-size:12px;font-weight:780;color:#3c4559;margin:0 0 10px;letter-spacing:-.01em}
+              .upload-button{position:relative;display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:14px 16px;border:0;border-radius:13px;background:var(--accent);color:#fff;font-weight:730;font-size:13px;box-shadow:0 7px 16px #5b61e81f;transition:background .18s,transform .18s}
+              .upload-button:hover{background:var(--accent-dark);transform:translateY(-1px)}
+              .upload-button svg{width:17px;height:17px}
+              .upload-button input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+              .progress-wrap{margin-top:15px;padding:13px;background:#f8f8ff;border:1px solid #e8e8ff;border-radius:12px}
+              .progress-meta{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11px;color:#687087;margin-bottom:8px}
+              #progressStatus{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+              #progressPercent{font-weight:800;color:var(--accent)}
+              .progress-track{height:5px;border-radius:999px;background:#e6e7f2;overflow:hidden}
+              #progressBar{height:100%;border-radius:999px;background:linear-gradient(90deg,#8588fa,#5b61e8);transition:width .15s}
+              .mobile-field{width:100%;display:block;border:1px solid var(--line);background:#fafbfe;color:#394258;border-radius:11px;padding:12px;font-size:12px;resize:vertical;min-height:68px}
+              .mobile-field::placeholder{color:#a0a6b5}
+              .secondary-button{width:100%;border:1px solid var(--line);background:#fff;color:#535d73;border-radius:11px;padding:11px 12px;font-size:12px;font-weight:700;margin-top:8px;transition:background .18s}
+              .secondary-button:hover{background:#f7f8fc}
+              .mobile-divider{border:0;border-top:1px solid #edf0f5;margin:21px 0}
+              .mobile-file-list{display:flex;flex-direction:column;gap:7px;max-height:200px;overflow:auto}
+              .mobile-file-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px;background:#fafbfe;border:1px solid #eff1f6;border-radius:11px}
+              .mobile-file-name{font-size:11px;color:#41495d;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+              .download-link{flex-shrink:0;text-decoration:none;color:var(--accent);background:var(--accent-soft);border-radius:8px;padding:7px 9px;font-size:10px;font-weight:750}
+              .download-link:hover{background:#e7e8ff}
+              .mobile-empty{padding:16px 8px;text-align:center;color:#9aa1b0;font-size:11px}
+              .toast{margin-top:12px;padding:11px 12px;border-radius:11px;font-size:11px;font-weight:650;border:1px solid transparent}
+              .toast.success{background:#eef9f4;color:var(--green);border-color:#d9f0e7}
+              .toast.error{background:#fff2f4;color:var(--red);border-color:#f5dfe4}
+              .pin-overlay{position:fixed;inset:0;z-index:50;background:rgba(246,247,251,.88);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center;padding:20px}
+              .pin-card{width:100%;max-width:370px;background:#fff;border:1px solid var(--line);border-radius:24px;padding:27px 24px;box-shadow:0 24px 70px rgba(25,35,66,.13);text-align:center}
+              .pin-symbol{width:48px;height:48px;border-radius:16px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;margin:0 auto 17px}
+              .pin-symbol svg{width:23px;height:23px}
+              .pin-card .mobile-heading{font-size:22px}
+              .pin-input{width:100%;border:1px solid #e2e5ef;background:#fafbfe;border-radius:13px;padding:14px 10px;text-align:center;font:750 24px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.28em;color:var(--ink);margin:20px 0 12px}
+              .pin-input:focus{border-color:#a5a7ff;outline:3px solid #a5a7ff33}
+              .pin-submit{width:100%;border:0;background:var(--accent);color:#fff;border-radius:12px;padding:13px;font-weight:750;font-size:13px}
+              .pin-submit:hover{background:var(--accent-dark)}
+              .pin-error{font-size:11px;color:var(--red);margin:10px 0 0}
+              .hidden{display:none!important}
+              @keyframes transfer-flight{0%{transform:translateX(0) scale(.7);opacity:0}14%{opacity:1}85%{opacity:1}100%{transform:translateX(140px) scale(1.1);opacity:0}}
+              @keyframes transfer-glow{0%,100%{box-shadow:0 7px 20px #5b61e83b}50%{box-shadow:0 7px 28px #5b61e86b}}
+              @media(max-width:380px){body.mobile-app{padding:15px 10px}.mobile-card{padding:17px}.mobile-topline{align-items:flex-start}.mobile-heading{font-size:18px}.pin-card{padding:23px 18px}}
+              @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.transfer-packet{display:none}}
             </style>
-        </head>
-        <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col items-center justify-center p-4">
-            
-            <!-- Modal de PIN -->
-            <div id="pinModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
-                <div class="bg-slate-900 border border-slate-800 p-6 rounded-3xl w-full max-w-sm text-center shadow-2xl">
-                    <h2 class="text-xl font-bold text-sky-400 mb-2">Autenticación Requerida</h2>
-                    <p class="text-xs text-slate-400 mb-4">Introduce el PIN de 6 dígitos que aparece en la pantalla de tu PC.</p>
-                    <input type="password" id="pinInput" maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="••••••" class="w-full bg-slate-950 border border-slate-700 text-center text-2xl tracking-widest py-3 rounded-xl mb-4 text-white focus:outline-none focus:border-sky-500">
-                    <button onclick="verifyPin()" class="w-full bg-sky-600 hover:bg-sky-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-sky-900/30">Conectar</button>
-                    <p id="pinError" class="text-xs text-rose-400 mt-3 hidden">PIN incorrecto.</p>
+        <body class="mobile-app">
+            <!-- Vinculación por PIN -->
+            <div id="pinModal" class="pin-overlay">
+              <div class="pin-card">
+                <div class="mobile-brand" style="justify-content:center;margin:0 0 25px">
+                  <div class="mobile-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7.5 12 4l5 3.5v9L12 20l-5-3.5z"/><path d="m7.5 8 4.5 3 4.5-3M12 11v8"/></svg></div>
+                  <div style="text-align:left"><div class="mobile-brand-name">AetherDrop</div><div class="mobile-brand-sub">Transferencias en tu red local</div></div>
                 </div>
+                <div class="pin-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg></div>
+                <h2 class="mobile-heading">Vincula tu dispositivo</h2>
+                <p class="mobile-muted">Introduce el código de seis dígitos que aparece en AetherDrop para ordenador.</p>
+                <input type="password" id="pinInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="••••••" class="pin-input" aria-label="PIN de seis dígitos">
+                <button onclick="verifyPin()" class="pin-submit">Conectar dispositivo</button>
+                <p id="pinError" class="pin-error hidden">PIN incorrecto.</p>
+              </div>
             </div>
 
-            <!-- App Principal -->
-            <div id="mainApp" class="w-full max-w-md bg-slate-900/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl shadow-2xl p-6 text-center hidden">
-                <div class="flex items-center justify-between mb-6">
-                    <div>
-                        <h1 class="text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">AetherDrop</h1>
-                        <p class="text-[11px] text-slate-400">Dispositivo vinculado</p>
-                    </div>
-                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">● En línea</span>
+            <main id="mainApp" class="mobile-shell hidden">
+              <header class="mobile-topline">
+                <div class="mobile-brand" style="margin:0">
+                  <div class="mobile-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7.5 12 4l5 3.5v9L12 20l-5-3.5z"/><path d="m7.5 8 4.5 3 4.5-3M12 11v8"/></svg></div>
+                  <div><div class="mobile-brand-name">AetherDrop</div><div class="mobile-brand-sub">Listo para compartir</div></div>
+                </div>
+                <span class="online-pill">Vinculado</span>
+              </header>
+
+              <section class="mobile-card">
+                <div>
+                  <h1 class="mobile-heading">Envía archivos fácilmente.</h1>
+                  <p class="mobile-muted">Del móvil al ordenador, en unos segundos.</p>
+                </div>
+                <div id="mobileBridge" class="transfer-bridge" aria-label="Conexión visual entre móvil y ordenador">
+                  <div class="transfer-line"></div>
+                  <span class="transfer-packet"></span><span class="transfer-packet p2"></span><span class="transfer-packet p3"></span>
+                  <div class="transfer-device phone" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 18.5h4"/></svg></div>
+                  <div class="transfer-orb" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+                  <div class="transfer-device pc" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+                  <div id="bridgeCaption" class="transfer-caption">Móvil vinculado · listo para transferir</div>
                 </div>
 
-                <div id="mobileBridge" class="transfer-bridge mb-6" aria-label="Conexión visual entre móvil y ordenador">
-                    <div class="transfer-line"></div>
-                    <span class="transfer-packet"></span><span class="transfer-packet p2"></span><span class="transfer-packet p3"></span>
-                    <div class="transfer-device phone" aria-hidden="true">▯</div>
-                    <div class="transfer-orb" aria-hidden="true">✦</div>
-                    <div class="transfer-device pc" aria-hidden="true">▣</div>
-                    <div id="bridgeCaption" class="transfer-caption">Vincula tu móvil con el ordenador</div>
+                <label class="upload-button">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m-5 5 5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>
+                  Elegir archivos para enviar
+                  <input type="file" id="fileInput" multiple onchange="uploadFiles()">
+                </label>
+
+                <div id="progressContainer" class="progress-wrap hidden">
+                  <div class="progress-meta"><span id="progressStatus">Enviando archivos…</span><span id="progressPercent">0%</span></div>
+                  <div class="progress-track"><div id="progressBar" style="width:0%"></div></div>
                 </div>
+                <div id="toast" class="hidden"></div>
 
-                <!-- Enviar al PC (Con opción Múltiple) -->
-                <div class="mb-6">
-                    <label class="block w-full bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white font-semibold py-3.5 px-4 rounded-2xl cursor-pointer transition shadow-lg shadow-indigo-900/30">
-                        Enviar Archivos o Vídeos
-                        <input type="file" id="fileInput" multiple class="hidden" onchange="uploadFiles()">
-                    </label>
-                    
-                    <!-- Barra de progreso -->
-                    <div id="progressContainer" class="mt-4 hidden text-left">
-                        <div class="flex justify-between items-center text-xs text-slate-300 mb-1">
-                            <span id="progressStatus" class="truncate max-w-[220px]">Subiendo...</span>
-                            <span id="progressPercent" class="font-bold text-sky-400">0%</span>
-                        </div>
-                        <div class="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
-                            <div id="progressBar" class="bg-gradient-to-r from-sky-500 to-indigo-500 h-2 rounded-full transition-all duration-150" style="width: 0%"></div>
-                        </div>
-                    </div>
+                <hr class="mobile-divider">
+                <section>
+                  <div class="mobile-section-title">Portapapeles compartido</div>
+                  <textarea id="clipboardText" rows="3" placeholder="Escribe o pega texto para enviarlo al ordenador…" class="mobile-field"></textarea>
+                  <button onclick="sendClipboard()" class="secondary-button">Enviar texto al ordenador</button>
+                  <button onclick="syncClipboard()" class="secondary-button" style="margin-top:6px">Actualizar desde el ordenador</button>
+                </section>
 
-                    <!-- Notificaciones de estado / Toast -->
-                    <div id="toast" class="mt-3 text-xs font-semibold p-2.5 rounded-xl hidden transition-all"></div>
-                </div>
-
-                <!-- Portapapeles Sincronizado -->
-                <div class="mb-6 bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80 text-left">
-                    <div class="flex justify-between items-center mb-2">
-                        <span class="text-xs font-bold text-slate-300 uppercase tracking-wider">Portapapeles Compartido</span>
-                        <button onclick="syncClipboard()" class="text-sky-400 hover:text-sky-300 text-xs font-medium">Actualizar</button>
-                    </div>
-                    <textarea id="clipboardText" rows="2" placeholder="Escribe o pega texto aquí para sincronizar con el PC..." class="w-full bg-slate-900 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500 resize-none"></textarea>
-                    <button onclick="sendClipboard()" class="mt-2 w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs py-2 rounded-xl font-medium transition">Enviar al Portapapeles del PC</button>
-                </div>
-
-                <hr class="border-slate-800/80 mb-6">
-
-                <!-- Descargar desde PC -->
-                <div class="text-left">
-                    <h2 class="text-xs font-bold text-slate-300 mb-3 uppercase tracking-wider">Archivos desde el PC</h2>
-                    <div id="fileList" class="space-y-2 max-h-40 overflow-y-auto pr-1">
-                        <p class="text-xs text-slate-500 text-center py-2">No hay archivos disponibles.</p>
-                    </div>
-                </div>
-            </div>
-
+                <hr class="mobile-divider">
+                <section>
+                  <div class="mobile-topline" style="margin-bottom:10px">
+                    <div class="mobile-section-title" style="margin:0">Archivos del ordenador</div>
+                    <span style="font-size:10px;color:#9299aa">Para descargar</span>
+                  </div>
+                  <div id="fileList" class="mobile-file-list"><p class="mobile-empty">No hay archivos disponibles.</p></div>
+                </section>
+              </section>
+              <p style="text-align:center;font-size:10px;color:#a0a6b5;margin:14px 0 0">Transferencia local · AetherDrop</p>
+            </main>
             <script>
                 let deviceId = localStorage.getItem('aether_device_id');
                 if (!deviceId) {
