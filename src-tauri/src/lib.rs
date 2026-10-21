@@ -208,9 +208,14 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     localStorage.setItem('aether_device_id', deviceId);
                 }
 
+                function authHeaders() {
+                    const token = localStorage.getItem('aether_token');
+                    return token ? { 'Authorization': `Bearer ${token}` } : {};
+                }
+
                 async function checkAuth() {
                     const token = localStorage.getItem('aether_token');
-                    if (token === 'true') {
+                    if (token && token !== 'true') {
                         document.getElementById('pinModal').classList.add('hidden');
                         document.getElementById('mainApp').classList.remove('hidden');
                         startSync();
@@ -236,7 +241,8 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         });
 
                         if (res.ok) {
-                            localStorage.setItem('aether_token', 'true');
+                            const authData = await res.json();
+                            localStorage.setItem('aether_token', authData.token);
                             pinError.classList.add('hidden');
                             document.getElementById('pinModal').classList.add('hidden');
                             document.getElementById('mainApp').classList.remove('hidden');
@@ -283,6 +289,8 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
 
                     const xhr = new XMLHttpRequest();
                     xhr.open('POST', '/upload', true);
+                    const token = localStorage.getItem('aether_token');
+                    if (token && token !== 'true') xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
                     xhr.upload.onprogress = (e) => {
                         if (e.lengthComputable) {
@@ -312,7 +320,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
 
                 async function fetchFiles() {
                     try {
-                        const res = await fetch('/files');
+                        const res = await fetch('/files', { headers: authHeaders() });
                         const files = await res.json();
                         const list = document.getElementById('fileList');
                         if (files.length === 0) {
@@ -330,7 +338,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
 
                 async function syncClipboard() {
                     try {
-                        const res = await fetch('/clipboard');
+                        const res = await fetch('/clipboard', { headers: authHeaders() });
                         const data = await res.json();
                         if (data.text !== undefined) {
                             document.getElementById('clipboardText').value = data.text;
@@ -342,7 +350,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     const text = document.getElementById('clipboardText').value;
                     await fetch('/clipboard', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', ...authHeaders() },
                         body: JSON.stringify({ text })
                     });
                     showToast("Portapapeles enviado al PC", true);
@@ -368,6 +376,10 @@ async fn require_auth(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
+    // The landing page and PIN exchange are the only unauthenticated routes.
+    if request.uri().path() == "/" || request.uri().path() == "/auth" {
+        return next.run(request).await;
+    }
     let token = request.headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
