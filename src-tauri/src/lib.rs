@@ -417,7 +417,7 @@ async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinReque
     }
     let mut devices = state.trusted_devices.write().await;
     if !devices.contains(&payload.device_id) {
-        devices.push(payload.device_id);
+        devices.push(payload.device_id.clone());
     }
     drop(devices);
     // Issue an unguessable bearer token; a client-side boolean is never authentication.
