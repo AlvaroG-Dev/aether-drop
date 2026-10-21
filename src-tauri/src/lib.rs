@@ -11,7 +11,7 @@ use local_ip_address::local_ip;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
@@ -29,7 +29,7 @@ struct AppState {
     pin: String,
     trusted_devices: Arc<RwLock<Vec<String>>>,
     clipboard_text: Arc<RwLock<String>>,
-    session_tokens: Arc<RwLock<HashSet<String>>>,
+    session_tokens: Arc<RwLock<HashMap<String, String>>>,
 }
 
 #[derive(Serialize)]
@@ -265,6 +265,12 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     }
                 }
 
+                function escapeHtml(value) {
+                    const element = document.createElement('span');
+                    element.textContent = String(value);
+                    return element.innerHTML;
+                }
+
                 function showToast(message, isSuccess) {
                     const toast = document.getElementById('toast');
                     toast.innerText = message;
@@ -337,7 +343,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         }
                         list.innerHTML = files.map(f => `
                             <div class="flex items-center justify-between bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
-                                <span class="text-xs truncate max-w-[200px] text-slate-200">${f.name}</span>
+                                <span class="text-xs truncate max-w-[200px] text-slate-200">${escapeHtml(f.name)}</span>
                                 <a href="/download/${f.id}" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-lg font-medium transition shadow">Descargar</a>
                             </div>
                         `).join('');
@@ -393,7 +399,7 @@ async fn require_auth(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
     let authorized = if let Some(token) = token {
-        state.session_tokens.read().await.contains(token)
+        { let sessions = state.session_tokens.read().await; if let Some(device_id) = sessions.get(token) { state.trusted_devices.read().await.contains(device_id) } else { false } }
     } else {
         false
     };
@@ -416,7 +422,7 @@ async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinReque
     drop(devices);
     // Issue an unguessable bearer token; a client-side boolean is never authentication.
     let token = uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().to_string();
-    state.session_tokens.write().await.insert(token.clone());
+    state.session_tokens.write().await.insert(token.clone(), payload.device_id.clone());
     (StatusCode::OK, Json(serde_json::json!({ "token": token }))).into_response()
 }
 
@@ -556,7 +562,7 @@ pub fn run() {
         pin,
         trusted_devices: Arc::new(RwLock::new(Vec::new())),
         clipboard_text: Arc::new(RwLock::new(String::new())),
-        session_tokens: Arc::new(RwLock::new(HashSet::new())),
+        session_tokens: Arc::new(RwLock::new(HashMap::new())),
     };
 
     start_local_server(state.clone());
