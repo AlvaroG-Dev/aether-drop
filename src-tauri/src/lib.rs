@@ -493,7 +493,7 @@ mod upload_filename_tests {
     #[test]
     fn strips_unix_and_windows_path_components() {
         assert_eq!(sanitize_upload_filename("../../photo.png"), Some("photo.png".to_owned()));
-        assert_eq!(sanitize_upload_filename(r"C:\\Users\\demo\\video.mp4"), Some("video.mp4".to_owned()));
+        assert_eq!(sanitize_upload_filename(r"C:\Users\demo\video.mp4"), Some("video.mp4".to_owned()));
     }
 
     #[test]
