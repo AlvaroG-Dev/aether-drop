@@ -1,5 +1,7 @@
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, State},
+    middleware::{self, Next},
+    http::{Request, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -9,9 +11,10 @@ use local_ip_address::local_ip;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::collections::HashSet;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
-use tower_http::cors::CorsLayer;
+
 use base64::{engine::general_purpose, Engine as _};
 use std::io::Cursor;
 use qrcode::QrCode;
@@ -26,6 +29,7 @@ struct AppState {
     pin: String,
     trusted_devices: Arc<RwLock<Vec<String>>>,
     clipboard_text: Arc<RwLock<String>>,
+    session_tokens: Arc<RwLock<HashSet<String>>>,
 }
 
 #[derive(Serialize)]
@@ -358,16 +362,40 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
     "###)
 }
 
-async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinRequest>) -> impl IntoResponse {
-    if payload.pin == state.pin {
-        let mut devices = state.trusted_devices.write().await;
-        if !devices.contains(&payload.device_id) {
-            devices.push(payload.device_id);
-        }
-        axum::http::StatusCode::OK.into_response()
+
+async fn require_auth(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    let token = request.headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let authorized = if let Some(token) = token {
+        state.session_tokens.read().await.contains(token)
     } else {
-        axum::http::StatusCode::UNAUTHORIZED.into_response()
+        false
+    };
+    if !authorized {
+        return StatusCode::UNAUTHORIZED.into_response();
     }
+    next.run(request).await
+}
+
+async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinRequest>) -> impl IntoResponse {
+    if payload.pin != state.pin || payload.device_id.len() > 128 || payload.device_id.is_empty() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let mut devices = state.trusted_devices.write().await;
+    if !devices.contains(&payload.device_id) {
+        devices.push(payload.device_id);
+    }
+    drop(devices);
+    // Issue an unguessable bearer token; a client-side boolean is never authentication.
+    let token = uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().to_string();
+    state.session_tokens.write().await.insert(token.clone());
+    (StatusCode::OK, Json(serde_json::json!({ "token": token }))).into_response()
 }
 
 // Receptor streaming multipart compatible con múltiples archivos en simultáneo
@@ -456,9 +484,9 @@ fn start_local_server(state: AppState) {
                 .route("/files", get(list_pc_files))
                 .route("/download/:id", get(download_pc_file))
                 .route("/clipboard", get(get_clipboard).post(set_clipboard))
+                .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
                 .with_state(state)
-                .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024))
-                .layer(CorsLayer::permissive());
+                .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024));
 
             let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
@@ -478,6 +506,7 @@ pub fn run() {
         pin,
         trusted_devices: Arc::new(RwLock::new(Vec::new())),
         clipboard_text: Arc::new(RwLock::new(String::new())),
+        session_tokens: Arc::new(RwLock::new(HashSet::new())),
     };
 
     start_local_server(state.clone());
