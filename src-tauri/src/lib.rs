@@ -136,6 +136,21 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>AetherDrop - Secure PWA</title>
             <script src="https://cdn.tailwindcss.com"></script>
+            <style>
+              .transfer-bridge{position:relative;min-height:118px;overflow:hidden;border:1px solid rgba(71,85,105,.55);border-radius:22px;background:radial-gradient(ellipse at center,rgba(56,189,248,.13),rgba(2,6,23,.2) 70%)}
+              .transfer-device{position:absolute;top:24px;width:46px;height:46px;border-radius:15px;display:grid;place-items:center;font-size:21px;background:linear-gradient(145deg,#0f172a,#1e293b);border:1px solid rgba(125,211,252,.35);z-index:2}
+              .transfer-device.phone{left:calc(50% - 104px)}.transfer-device.pc{right:calc(50% - 104px)}
+              .transfer-orb{position:absolute;left:50%;top:47px;transform:translate(-50%,-50%);width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:white;background:linear-gradient(135deg,#38bdf8,#6366f1);box-shadow:0 0 20px rgba(56,189,248,.35);z-index:2}
+              .transfer-line{position:absolute;left:calc(50% - 82px);right:calc(50% - 82px);top:47px;height:2px;background:linear-gradient(90deg,rgba(56,189,248,.08),rgba(56,189,248,.65),rgba(129,140,248,.65),rgba(129,140,248,.08))}
+              .transfer-packet{position:absolute;left:calc(50% - 75px);top:44px;width:7px;height:7px;border-radius:50%;background:#7dd3fc;box-shadow:0 0 12px #38bdf8;opacity:0}
+              .transfer-bridge.transferring .transfer-packet{opacity:1;animation:transfer-flight 1.3s linear infinite}
+              .transfer-bridge.transferring .transfer-packet.p2{animation-delay:.43s}.transfer-bridge.transferring .transfer-packet.p3{animation-delay:.86s}
+              .transfer-bridge.paired .transfer-orb,.transfer-bridge.transferring .transfer-orb{animation:transfer-glow 1.8s ease-in-out infinite}
+              .transfer-caption{position:absolute;bottom:11px;left:8px;right:8px;text-align:center;font-size:11px;color:#cbd5e1}
+              @keyframes transfer-flight{0%{transform:translateX(0) scale(.65);opacity:0}15%{opacity:1}85%{opacity:1}100%{transform:translateX(150px) scale(1.15);opacity:0}}
+              @keyframes transfer-glow{0%,100%{box-shadow:0 0 15px rgba(56,189,248,.3)}50%{box-shadow:0 0 30px rgba(56,189,248,.8)}}
+              @media(prefers-reduced-motion:reduce){.transfer-bridge *{animation:none!important}.transfer-packet{display:none}}
+            </style>
         </head>
         <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col items-center justify-center p-4">
             
@@ -158,6 +173,15 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         <p class="text-[11px] text-slate-400">Dispositivo vinculado</p>
                     </div>
                     <span class="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">● En línea</span>
+                </div>
+
+                <div id="mobileBridge" class="transfer-bridge mb-6" aria-label="Conexión visual entre móvil y ordenador">
+                    <div class="transfer-line"></div>
+                    <span class="transfer-packet"></span><span class="transfer-packet p2"></span><span class="transfer-packet p3"></span>
+                    <div class="transfer-device phone" aria-hidden="true">▯</div>
+                    <div class="transfer-orb" aria-hidden="true">✦</div>
+                    <div class="transfer-device pc" aria-hidden="true">▣</div>
+                    <div id="bridgeCaption" class="transfer-caption">Vincula tu móvil con el ordenador</div>
                 </div>
 
                 <!-- Enviar al PC (Con opción Múltiple) -->
@@ -210,6 +234,13 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     localStorage.setItem('aether_device_id', deviceId);
                 }
 
+                function setBridgeState(state, caption) {
+                    const bridge = document.getElementById('mobileBridge');
+                    bridge.classList.remove('paired', 'transferring');
+                    if (state) bridge.classList.add(state);
+                    document.getElementById('bridgeCaption').textContent = caption;
+                }
+
                 function authHeaders() {
                     const token = localStorage.getItem('aether_token');
                     return token ? { 'Authorization': `Bearer ${token}` } : {};
@@ -226,6 +257,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         if (!response.ok) throw new Error('Session expired');
                         document.getElementById('pinModal').classList.add('hidden');
                         document.getElementById('mainApp').classList.remove('hidden');
+                        setBridgeState('paired', 'Móvil vinculado · listo para transferir');
                         startSync();
                     } catch (_) {
                         localStorage.removeItem('aether_token');
@@ -256,6 +288,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                             pinError.classList.add('hidden');
                             document.getElementById('pinModal').classList.add('hidden');
                             document.getElementById('mainApp').classList.remove('hidden');
+                            setBridgeState('paired', 'Móvil vinculado · listo para transferir');
                             startSync();
                         } else {
                             pinError.innerText = "PIN incorrecto.";
@@ -298,6 +331,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     const progressPercent = document.getElementById('progressPercent');
                     const progressBar = document.getElementById('progressBar');
 
+                    setBridgeState('transferring', 'Enviando archivos al ordenador…');
                     progressContainer.classList.remove('hidden');
                     progressStatus.innerText = files.length > 1 ? `Subiendo ${files.length} archivos...` : `Subiendo ${files[0].name}...`;
                     progressBar.style.width = '0%';
@@ -321,14 +355,17 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         if (xhr.status === 200) {
                             showToast(files.length > 1 ? "¡Todos los archivos enviados con éxito al PC!" : "¡Archivo enviado con éxito al PC!", true);
                             input.value = "";
+                            setBridgeState('paired', 'Transferencia completada');
                         } else {
                             showToast("Error en el servidor al guardar el archivo.", false);
+                            setBridgeState('paired', 'No se pudo completar la transferencia');
                         }
                     };
 
                     xhr.onerror = () => {
                         progressContainer.classList.add('hidden');
                         showToast("Error de conexión con la red local.", false);
+                        setBridgeState('paired', 'Conexión interrumpida');
                     };
 
                     xhr.send(formData);
