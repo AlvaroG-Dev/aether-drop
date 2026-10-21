@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AetherDrop - Panel Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col items-center justify-center p-6 select-none">
+    <div class="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-8 text-center flex flex-col items-center">
+      <h1 class="text-3xl font-extrabold text-sky-400 mb-1">AetherDrop</h1>
+      <p class="text-slate-400 text-sm mb-6">Escanea el QR con tu móvil o comparte archivos bidireccionalmente</p>
+      
+      <!-- Contenedor QR y URL -->
+      <div class="flex gap-6 items-center w-full mb-6 bg-slate-950/50 p-4 rounded-2xl border border-slate-800">
+        <div class="bg-white p-2 rounded-xl shrink-0">
+          <img id="qrImage" alt="QR" class="w-32 h-32 block rounded" />
+        </div>
+        <div class="text-left overflow-hidden">
+          <p class="text-xs text-slate-400 font-semibold mb-1">ENLACE LOCAL:</p>
+          <div class="font-mono text-emerald-400 text-xs break-all bg-slate-900 p-2 rounded border border-slate-800" id="serverUrl">
+            Cargando...
+          </div>
+        </div>
+      </div>
+
+      <!-- Selector de Carpeta de Destino -->
+      <div class="w-full bg-slate-800/40 border border-slate-700/50 p-3.5 rounded-xl flex items-center justify-between text-left mb-6">
+        <div class="overflow-hidden mr-2">
+          <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Carpeta de recepción:</p>
+          <p id="savePath" class="text-xs text-slate-200 truncate mt-0.5 font-mono">Cargando...</p>
+        </div>
+        <button onclick="changeDirectory()" class="bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white text-xs px-3 py-2 rounded-lg font-semibold transition shrink-0 shadow">
+          Cambiar
+        </button>
+      </div>
+
+      <!-- Sección PC -> Móvil (Archivos Compartidos) -->
+      <div class="w-full text-left">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Archivos para enviar al móvil</h2>
+          <button onclick="shareFile()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-lg font-semibold transition shadow">
+            + Añadir Archivo
+          </button>
+        </div>
+        <div id="sharedList" class="space-y-2 max-h-36 overflow-y-auto bg-slate-950 p-3 rounded-xl border border-slate-800">
+          <p class="text-xs text-slate-500 text-center py-2">Ningún archivo compartido desde el PC.</p>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      const { invoke } = window.__TAURI__.core;
+      const { open } = window.__TAURI__.dialog;
+
+      async function initApp() {
+        try {
+          const info = await invoke('get_connection_info');
+          document.getElementById('serverUrl').innerText = info.url;
+          document.getElementById('qrImage').src = info.qr_base64;
+          document.getElementById('savePath').innerText = info.save_path;
+        } catch (e) {
+          document.getElementById('serverUrl').innerText = "Error detectando red";
+        }
+        loadSharedFiles();
+      }
+
+      window.changeDirectory = async () => {
+        const selected = await open({ directory: true, multiple: false });
+        if (selected) {
+          const newPath = await invoke('set_save_directory', { path: selected });
+          document.getElementById('savePath').innerText = newPath;
+        }
+      }
+
+      window.shareFile = async () => {
+        const selected = await open({ multiple: false });
+        if (selected) {
+          const files = await invoke('share_pc_file', { path: selected });
+          renderSharedFiles(files);
+        }
+      }
+
+      window.removeFile = async (id) => {
+        const files = await invoke('remove_pc_file', { id });
+        renderSharedFiles(files);
+      }
+
+      async function loadSharedFiles() {
+        try {
+          const files = await invoke('get_shared_files');
+          renderSharedFiles(files);
+        } catch(e) {}
+      }
+
+      function renderSharedFiles(files) {
+        const list = document.getElementById('sharedList');
+        if (!files || files.length === 0) {
+          list.innerHTML = '<p class="text-xs text-slate-500 text-center py-2">Ningún archivo compartido desde el PC.</p>';
+          return;
+        }
+        list.innerHTML = files.map(f => `
+          <div class="flex items-center justify-between bg-slate-900 p-2 rounded-lg border border-slate-800">
+            <span class="text-xs truncate max-w-[260px] text-slate-200">${f.name}</span>
+            <button onclick="removeFile('${f.id}')" class="text-rose-400 hover:text-rose-300 text-xs font-bold px-2 py-1">✕</button>
+          </div>
+        `).join('');
+      }
+
+      initApp();
+    </script>
+  </body>
+</html>
