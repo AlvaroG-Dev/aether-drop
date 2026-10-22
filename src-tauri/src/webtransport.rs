@@ -15,6 +15,7 @@ const MAX_HELLO_BYTES: usize = 512;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WebTransportInfo {
+    pub host: String,
     pub url: String,
     pub certificate_hash: String,
     pub origin: String,
@@ -65,6 +66,7 @@ pub async fn run(
         }
     };
     let info = WebTransportInfo {
+        host: host.clone(),
         url: format!("https://{host}:{PORT}/aetherdrop-wt-probe-v1"),
         certificate_hash,
         origin: ALLOWED_ORIGIN.to_owned(),
