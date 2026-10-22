@@ -358,4 +358,12 @@
                     syncClipboard(true);
                 }
 
+                document.getElementById('pinSubmit').addEventListener('click', verifyPin);
+                document.getElementById('pinInput').addEventListener('keydown', event => {
+                    if (event.key === 'Enter') verifyPin();
+                });
+                document.getElementById('fileInput').addEventListener('change', uploadFiles);
+                document.getElementById('sendClipboardButton').addEventListener('click', sendClipboard);
+                document.getElementById('refreshClipboardButton').addEventListener('click', () => syncClipboard(true));
+
                 checkAuth();
