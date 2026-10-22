@@ -517,11 +517,50 @@ async fn session_from_download_ticket(
     })
 }
 
+fn is_allowed_local_authority(authority: &str) -> bool {
+    let Ok(parsed) = authority.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    let host = parsed.host().trim_matches(['[', ']']).trim_end_matches('.');
+    host.parse::<IpAddr>().is_ok()
+        || host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("aetherdrop.local")
+}
+
+fn origin_matches_authority(origin: &str, request_authority: &str) -> bool {
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    uri.scheme_str() == Some("http")
+        && uri.authority().is_some_and(|authority| {
+            authority.as_str().eq_ignore_ascii_case(request_authority)
+        })
+}
+
 async fn require_auth(
     State(state): State<AppState>,
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
+    // The listener is exposed to the LAN. Reject arbitrary Host values to reduce
+    // DNS-rebinding access, and reject browser cross-origin requests when Origin exists.
+    let Some(host) = request.headers()
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !is_allowed_local_authority(host) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if let Some(origin) = request.headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    {
+        if !origin_matches_authority(origin, host) {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
     if request.uri().path() == "/" || request.uri().path() == "/auth" || request.uri().path() == "/mobile.js" {
         return next.run(request).await;
     }
@@ -669,8 +708,9 @@ fn content_disposition_value(filename: &str) -> String {
 #[cfg(test)]
 mod upload_filename_tests {
     use super::{
-        auth_rate_limited, content_disposition_value, record_auth_failure,
-        sanitize_upload_filename, AuthFailureState, MAX_AUTH_FAILURES,
+        auth_rate_limited, content_disposition_value, is_allowed_local_authority,
+        origin_matches_authority, record_auth_failure, sanitize_upload_filename,
+        AuthFailureState, MAX_AUTH_FAILURES,
     };
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
@@ -699,6 +739,30 @@ mod upload_filename_tests {
         let value = content_disposition_value("foto ñ.png");
         assert!(value.starts_with("attachment; filename=\"foto _.png\"; filename*=UTF-8''"));
         assert!(value.contains("%C3%B1"));
+    }
+
+    #[test]
+    fn host_validation_rejects_dns_rebinding_hostnames() {
+        assert!(is_allowed_local_authority("192.168.1.25:8080"));
+        assert!(is_allowed_local_authority("[::1]:8080"));
+        assert!(is_allowed_local_authority("aetherdrop.local:8080"));
+        assert!(!is_allowed_local_authority("attacker.example:8080"));
+    }
+
+    #[test]
+    fn origin_must_match_the_local_authority() {
+        assert!(origin_matches_authority(
+            "http://192.168.1.25:8080",
+            "192.168.1.25:8080"
+        ));
+        assert!(!origin_matches_authority(
+            "https://192.168.1.25:8080",
+            "192.168.1.25:8080"
+        ));
+        assert!(!origin_matches_authority(
+            "http://attacker.example:8080",
+            "192.168.1.25:8080"
+        ));
     }
 
     #[test]
