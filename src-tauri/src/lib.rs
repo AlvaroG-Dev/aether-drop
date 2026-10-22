@@ -121,7 +121,7 @@ struct UploadStartResponse {
     next_chunk: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct UploadProgressResponse {
     filename: String,
     size_bytes: u64,
