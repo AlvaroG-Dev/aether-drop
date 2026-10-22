@@ -13,7 +13,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt,clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check desktop JavaScript syntax
+        run: node --check src/app.js
+      - name: Check mobile JavaScript syntax
+        run: node --check src-tauri/src/mobile.js
       - name: Install Tauri Linux dependencies
         run: |
           sudo apt-get update
@@ -21,6 +28,8 @@ jobs:
       - name: Format Rust sources in the CI workspace
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all
       - name: Run Rust unit tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Compile Rust application
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked --manifest-path src-tauri/Cargo.toml
