@@ -36,6 +36,8 @@ const MAX_SHARED_FILES: usize = 256;
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const MAX_CLIPBOARD_REQUEST_BYTES: usize = 6 * 1024 * 1024;
 const MAX_AUTH_REQUEST_BYTES: usize = 4 * 1024;
+const DISK_SPACE_CHECK_INTERVAL: u64 = 16 * 1024 * 1024;
+const DISK_SPACE_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TRACKED_AUTH_IPS: usize = 1024;
 const MAX_AUTH_FAILURES: u32 = 10;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
@@ -984,6 +986,7 @@ async fn handle_upload(
             let mut output = temp_file;
             let mut stream_hash = Sha256::new();
             let mut file_size = 0u64;
+            let mut last_disk_check = 0u64;
             loop {
                 let next_chunk = tokio::select! {
                     _ = state.server_shutdown.cancelled() => {
@@ -1008,6 +1011,19 @@ async fn handle_upload(
                 }
                 if total_bytes.saturating_add(chunk_size) > MAX_UPLOAD_REQUEST_BYTES as u64 {
                     return Err((StatusCode::PAYLOAD_TOO_LARGE, "La petición supera el límite total permitido."));
+                }
+                if file_size == 0
+                    || file_size.saturating_sub(last_disk_check) >= DISK_SPACE_CHECK_INTERVAL
+                {
+                    let path_for_check = dir.clone();
+                    let available = tokio::task::spawn_blocking(move || fs2::available_space(path_for_check))
+                        .await
+                        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo comprobar el espacio libre."))?
+                        .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo consultar el espacio disponible en el disco."))?;
+                    if available < DISK_SPACE_RESERVE_BYTES.saturating_add(chunk_size) {
+                        return Err((StatusCode::INSUFFICIENT_STORAGE, "El disco está casi lleno; libera espacio antes de subir el archivo."));
+                    }
+                    last_disk_check = file_size;
                 }
                 output.write_all(&chunk).await
                     .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo escribir el archivo; comprueba el espacio disponible."))?;
