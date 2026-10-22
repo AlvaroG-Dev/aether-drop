@@ -3,7 +3,6 @@
 //! routed through this endpoint until end-to-end tests have passed.
 
 use std::{net::IpAddr, time::Duration};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::oneshot, time::timeout};
@@ -56,7 +55,7 @@ pub async fn run(
         let _ = ready.send(Err("El certificado WebTransport no contiene una hoja.".to_owned()));
         return;
     };
-    let certificate_hash = STANDARD.encode(certificate.hash().as_ref());
+    let certificate_hash = certificate.hash().fmt(Sha256DigestFmt::DottedHex).replace(':', "");
     let config = ServerConfig::builder().with_bind_default(PORT).with_identity(identity).build();
     let endpoint = match Endpoint::server(config) {
         Ok(endpoint) => endpoint,
