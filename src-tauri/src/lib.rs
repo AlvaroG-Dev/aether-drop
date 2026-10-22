@@ -80,14 +80,14 @@ enum PublishError {
     Io(std::io::Error),
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct UploadReceipt {
     filename: String,
     size_bytes: u64,
     sha256: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct UploadResponse {
     files: Vec<UploadReceipt>,
 }
