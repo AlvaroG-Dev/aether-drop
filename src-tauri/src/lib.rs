@@ -64,7 +64,9 @@ struct AuthorizedSession {
 }
 
 #[derive(Clone)]
-struct UploadRequestPermit(Arc<OwnedSemaphorePermit>);
+struct UploadRequestPermit {
+    _permit: Arc<OwnedSemaphorePermit>,
+}
 
 #[derive(Clone)]
 struct AuthFailureState {
@@ -746,7 +748,9 @@ async fn require_auth(
                 return StatusCode::TOO_MANY_REQUESTS.into_response();
             }
         };
-        request.extensions_mut().insert(UploadRequestPermit(Arc::new(permit)));
+        request.extensions_mut().insert(UploadRequestPermit {
+            _permit: Arc::new(permit),
+        });
     }
     next.run(request).await
 }
@@ -1122,7 +1126,7 @@ mod upload_filename_tests {
         let Json(progress) = upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
-            Extension(super::UploadRequestPermit(Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()))),
+            Extension(super::UploadRequestPermit { _permit: Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()) }),
             AxumPath((start.transfer_id.clone(), 0)),
             headers,
             Bytes::from(data.clone()),
@@ -1183,9 +1187,9 @@ mod upload_filename_tests {
         let Json(after_first) = upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
-            Extension(super::UploadRequestPermit(Arc::new(
-                state.upload_slots.clone().acquire_owned().await.unwrap()
-            ))),
+            Extension(super::UploadRequestPermit {
+                _permit: Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()),
+            }),
             AxumPath((start.transfer_id.clone(), 0)),
             first_headers,
             Bytes::copy_from_slice(first_chunk),
@@ -1204,9 +1208,9 @@ mod upload_filename_tests {
         let Json(after_second) = upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
-            Extension(super::UploadRequestPermit(Arc::new(
-                state.upload_slots.clone().acquire_owned().await.unwrap()
-            ))),
+            Extension(super::UploadRequestPermit {
+                _permit: Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()),
+            }),
             AxumPath((start.transfer_id.clone(), 1)),
             second_headers,
             Bytes::copy_from_slice(second_chunk),
@@ -1253,7 +1257,7 @@ mod upload_filename_tests {
         upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
-            Extension(super::UploadRequestPermit(Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()))),
+            Extension(super::UploadRequestPermit { _permit: Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()) }),
             AxumPath((start.transfer_id.clone(), 0)),
             headers,
             Bytes::from(data),
@@ -1304,7 +1308,7 @@ mod upload_filename_tests {
         let error = upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
-            Extension(super::UploadRequestPermit(Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()))),
+            Extension(super::UploadRequestPermit { _permit: Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()) }),
             AxumPath((start.transfer_id.clone(), 0)),
             headers,
             Bytes::from(data),
