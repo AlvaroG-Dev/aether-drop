@@ -203,7 +203,7 @@
 
                 async function getOrStartUpload(file, storageKey) {
                     let saved = null;
-                    try { saved = JSON.parse(sessionStorage.getItem(storageKey) || 'null'); } catch (_) {}
+                    try { saved = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (_) {}
                     if (saved && saved.transfer_id && saved.filename === file.name &&
                         Number(saved.size_bytes) === file.size &&
                         Number(saved.last_modified) === file.lastModified &&
@@ -225,7 +225,7 @@
                             // reused. Request explicit cleanup before creating another.
                             await cancelPendingUpload(saved.transfer_id, storageKey);
                         } else {
-                            try { sessionStorage.removeItem(storageKey); } catch (_) {}
+                            try { localStorage.removeItem(storageKey); } catch (_) {}
                         }
                     }
 
@@ -254,7 +254,7 @@
                         return { ok: false, message: 'Los parámetros de transferencia del servidor no son válidos.' };
                     }
                     try {
-                        sessionStorage.setItem(storageKey, JSON.stringify({
+                        localStorage.setItem(storageKey, JSON.stringify({
                             transfer_id: data.transfer_id,
                             filename: file.name,
                             size_bytes: file.size,
@@ -506,7 +506,7 @@
                         } catch (_) {}
                     }
                     if (storageKey) {
-                        try { sessionStorage.removeItem(storageKey); } catch (_) {}
+                        try { localStorage.removeItem(storageKey); } catch (_) {}
                     }
                 }
 
@@ -617,7 +617,7 @@
                                     await cancelPendingUpload(transferId, storageKey);
                                     throw new Error('La respuesta de integridad del servidor no coincide con el archivo.');
                                 }
-                                try { sessionStorage.removeItem(storageKey); } catch (_) {}
+                                try { localStorage.removeItem(storageKey); } catch (_) {}
                                 sentFiles++;
                                 completedBytes += file.size;
                                 setProgress(completedBytes);
