@@ -513,8 +513,8 @@ async fn session_from_download_ticket(
 }
 
 async fn require_auth(
-    mut request: Request<axum::body::Body>,
     State(state): State<AppState>,
+    mut request: Request<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
     if request.uri().path() == "/" || request.uri().path() == "/auth" || request.uri().path() == "/mobile.js" {
