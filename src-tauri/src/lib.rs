@@ -3,22 +3,22 @@ use axum::{
     middleware::{self, Next},
     http::{Request, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use local_ip_address::local_ip;
 use sha2::{Digest, Sha256};
-use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, Instant};
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 use rand::Rng;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
 use base64::{engine::general_purpose, Engine as _};
@@ -32,6 +32,10 @@ const MAX_UPLOAD_REQUEST_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_FILE_BYTES: u64 = MAX_UPLOAD_REQUEST_BYTES as u64 - 1024 * 1024;
 const MAX_UPLOAD_FILES: usize = 32;
 const MAX_CONCURRENT_UPLOADS: usize = 3;
+const MAX_PENDING_UPLOADS: usize = 24;
+const UPLOAD_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+const UPLOAD_CHUNK_U64: u64 = UPLOAD_CHUNK_BYTES as u64;
+const PENDING_UPLOAD_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 const MAX_SHARED_FILES: usize = 256;
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const MAX_CLIPBOARD_REQUEST_BYTES: usize = 6 * 1024 * 1024;
@@ -105,6 +109,52 @@ enum ServerStatus {
     Failed(String),
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadStartRequest {
+    filename: String,
+    size_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct UploadStartResponse {
+    transfer_id: String,
+    chunk_size: usize,
+    chunks_total: u64,
+    next_chunk: u64,
+}
+
+#[derive(Serialize)]
+struct UploadProgressResponse {
+    filename: String,
+    size_bytes: u64,
+    received_bytes: u64,
+    next_chunk: u64,
+    chunks_total: u64,
+    chunk_size: usize,
+}
+
+struct PendingUpload {
+    filename: String,
+    temp_path: PathBuf,
+    expected_size: u64,
+    received_size: u64,
+    next_chunk: u64,
+    hasher: Sha256,
+    last_activity: Instant,
+    _slot: OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
+struct PendingUploadHandle {
+    owner_device_id: String,
+    session_token: String,
+    session_cancellation: CancellationToken,
+    session_expires_at: Instant,
+    cancellation: CancellationToken,
+    inner: Arc<AsyncMutex<PendingUpload>>,
+}
+
 #[derive(Clone)]
 struct AppState {
     save_dir: Arc<RwLock<PathBuf>>,
@@ -115,6 +165,9 @@ struct AppState {
     session_tokens: Arc<RwLock<HashMap<String, SessionRecord>>>,
     auth_failures: Arc<RwLock<HashMap<IpAddr, AuthFailureState>>>,
     upload_slots: Arc<Semaphore>,
+    pending_upload_slots: Arc<Semaphore>,
+    pending_uploads: Arc<RwLock<HashMap<String, PendingUploadHandle>>>,
+    reserved_upload_bytes: Arc<AtomicU64>,
     download_tickets: Arc<RwLock<HashMap<String, DownloadTicket>>>,
     server_status: Arc<RwLock<ServerStatus>>,
     server_shutdown: CancellationToken,
