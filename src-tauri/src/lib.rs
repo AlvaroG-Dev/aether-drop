@@ -509,86 +509,149 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     setTimeout(() => toast.classList.add('hidden'), 5000);
                 }
 
-                function uploadFiles() {
-                    const input = document.getElementById('fileInput');
-                    if (input.files.length === 0) return;
-                    
-                    const files = Array.from(input.files);
-                    const formData = new FormData();
-                    files.forEach(file => formData.append('file', file));
+                let uploadInProgress = false;
 
+                async function uploadFiles() {
+                    const input = document.getElementById('fileInput');
+                    if (input.files.length === 0 || uploadInProgress) return;
+
+                    const files = Array.from(input.files);
+                    if (files.length > 32) {
+                        showToast("Selecciona como máximo 32 archivos por operación.", false);
+                        input.value = "";
+                        return;
+                    }
+
+                    uploadInProgress = true;
+                    input.disabled = true;
                     const progressContainer = document.getElementById('progressContainer');
                     const progressStatus = document.getElementById('progressStatus');
                     const progressPercent = document.getElementById('progressPercent');
                     const progressBar = document.getElementById('progressBar');
+                    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+                    let uploadedBytes = 0;
+                    let sentFiles = 0;
+                    const failures = [];
+
+                    function updateProgress(currentFileFraction) {
+                        const projected = uploadedBytes + (currentFileFraction || 0);
+                        const percent = totalBytes > 0
+                            ? Math.max(0, Math.min(100, Math.floor((projected / totalBytes) * 100)))
+                            : Math.floor((sentFiles / files.length) * 100);
+                        progressBar.style.width = percent + '%';
+                        progressPercent.innerText = percent + '%';
+                    }
 
                     setBridgeState('transferring', 'Enviando archivos al ordenador…');
                     progressContainer.classList.remove('hidden');
-                    progressStatus.innerText = files.length > 1 ? `Subiendo ${files.length} archivos...` : `Subiendo ${files[0].name}...`;
                     progressBar.style.width = '0%';
                     progressPercent.innerText = '0%';
 
-                    if (activeUploadXhr.current && activeUploadXhr.current.readyState !== XMLHttpRequest.DONE) {
-                        showToast('Ya hay una transferencia en curso. Espera a que termine.', false);
-                        return;
+                    try {
+                        for (let index = 0; index < files.length; index++) {
+                            if (revocationHandled || !localStorage.getItem('aether_token')) break;
+                            const file = files[index];
+                            progressStatus.innerText = 'Subiendo ' + file.name + ' (' + (index + 1) + ' de ' + files.length + ')…';
+
+                            const result = await new Promise(resolve => {
+                                const formData = new FormData();
+                                formData.append('file', file, file.name);
+                                const xhr = new XMLHttpRequest();
+                                activeUploadXhr.current = xhr;
+                                xhr.open('POST', '/upload', true);
+                                xhr.timeout = 0;
+                                const token = localStorage.getItem('aether_token');
+                                if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+
+                                xhr.upload.onprogress = event => {
+                                    if (event.lengthComputable) {
+                                        const fraction = Math.max(0, Math.min(1, event.loaded / event.total));
+                                        updateProgress(file.size * fraction);
+                                    }
+                                };
+
+                                xhr.onload = () => {
+                                    if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
+                                    if (xhr.status === 401) {
+                                        handleAuthorizationRevoked();
+                                        resolve({ ok: false, revoked: true, message: 'Sesión revocada.' });
+                                        return;
+                                    }
+                                    if (xhr.status === 200) {
+                                        try {
+                                            const receipt = JSON.parse(xhr.responseText);
+                                            const uploaded = receipt.files && receipt.files[0];
+                                            if (!uploaded || uploaded.filename !== file.name ||
+                                                Number(uploaded.size_bytes) !== file.size ||
+                                                !/^[a-f0-9]{64}$/.test(uploaded.sha256)) {
+                                                resolve({ ok: false, message: 'La respuesta de integridad del servidor no es válida.' });
+                                                return;
+                                            }
+                                            resolve({ ok: true, receipt: uploaded });
+                                        } catch (_) {
+                                            resolve({ ok: false, message: 'El servidor devolvió una respuesta de transferencia no válida.' });
+                                        }
+                                        return;
+                                    }
+                                    const detail = (xhr.responseText || '').trim();
+                                    const known = {
+                                        400: 'La petición o el nombre del archivo no son válidos.',
+                                        401: 'La sesión ha caducado. Vuelve a vincular el móvil con el PIN.',
+                                        409: 'Ya existe un archivo con ese nombre en el PC.',
+                                        413: 'El archivo o la petición supera el límite permitido.',
+                                        429: 'Hay demasiadas transferencias o intentos. Espera y vuelve a probar.',
+                                        507: 'No hay espacio suficiente o no se puede escribir el archivo.'
+                                    };
+                                    resolve({
+                                        ok: false,
+                                        message: detail && detail.length < 220 ? detail : (known[xhr.status] || 'Error HTTP ' + xhr.status + '.')
+                                    });
+                                };
+
+                                xhr.onerror = () => {
+                                    if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
+                                    resolve({ ok: false, message: 'No se pudo conectar con el PC. Comprueba la Wi-Fi y el firewall.' });
+                                };
+                                xhr.onabort = () => {
+                                    if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
+                                    if (xhr._aetherRevoked || revocationHandled) {
+                                        resolve({ ok: false, revoked: true, message: 'Sesión revocada.' });
+                                    } else {
+                                        resolve({ ok: false, message: 'La transferencia se canceló antes de terminar.' });
+                                    }
+                                };
+                                xhr.send(formData);
+                            });
+
+                            if (result.revoked || revocationHandled) break;
+                            if (result.ok) {
+                                sentFiles++;
+                                uploadedBytes += file.size;
+                                updateProgress(0);
+                            } else {
+                                failures.push(file.name + ': ' + result.message);
+                            }
+                        }
+                    } finally {
+                        uploadInProgress = false;
+                        input.disabled = false;
+                        progressContainer.classList.add('hidden');
                     }
-                    const xhr = new XMLHttpRequest();
-                    activeUploadXhr.current = xhr;
-                    xhr.open('POST', '/upload', true);
-                    const token = localStorage.getItem('aether_token');
-                    if (token && token !== 'true') xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
-                    xhr.upload.onprogress = (e) => {
-                        if (e.lengthComputable) {
-                            const percent = Math.round((e.loaded / e.total) * 100);
-                            progressBar.style.width = percent + '%';
-                            progressPercent.innerText = percent + '%';
-                        }
-                    };
-
-                    xhr.onload = () => {
-                        if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
-                        progressContainer.classList.add('hidden');
-                        if (xhr.status === 401) {
-                            handleAuthorizationRevoked();
-                            return;
-                        }
-                        if (xhr.status === 200) {
-                            showToast(files.length > 1 ? "¡Todos los archivos enviados con éxito al PC!" : "¡Archivo enviado con éxito al PC!", true);
-                            input.value = "";
-                            setBridgeState('paired', 'Transferencia completada');
-                        } else {
-                            let detail = (xhr.responseText || '').trim();
-                            const known = {
-                              400: 'La petición o el nombre del archivo no son válidos.',
-                              401: 'La sesión ha caducado. Vuelve a vincular el móvil con el PIN.',
-                              409: 'Ya existe un archivo con ese nombre en el PC.',
-                              413: 'El archivo o la petición supera el límite permitido.',
-                              429: 'Demasiados intentos. Espera un minuto y vuelve a probar.',
-                              500: 'El PC no pudo guardar el archivo. Comprueba permisos y espacio disponible.'
-                            };
-                            if (!detail || detail.length > 240) detail = known[xhr.status] || 'El servidor rechazó la transferencia.';
-                            if (xhr.status === 409) detail = 'Ya existe un archivo con ese nombre. Cambia el nombre del archivo y vuelve a intentarlo.';
-                            showToast('Error HTTP ' + xhr.status + ': ' + detail, false);
-                            setBridgeState('paired', 'No se pudo completar la transferencia');
-                        }
-                    };
-
-                    xhr.onerror = () => {
-                        if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
-                        progressContainer.classList.add('hidden');
-                        showToast("No se pudo conectar con el PC. Comprueba la Wi-Fi, el firewall y que AetherDrop siga abierto.", false);
-                        setBridgeState('paired', 'Conexión interrumpida');
-                    };
-                    xhr.onabort = () => {
-                        if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
-                        progressContainer.classList.add('hidden');
-                        if (xhr._aetherRevoked) return;
-                        showToast("La subida se canceló antes de terminar. El archivo no se considera transferido.", false);
-                        setBridgeState('paired', 'Transferencia cancelada');
-                    };
-
-                    xhr.send(formData);
+                    if (revocationHandled) return;
+                    if (sentFiles === files.length) {
+                        input.value = '';
+                        setBridgeState('paired', 'Transferencia completada');
+                        showToast(files.length === 1
+                            ? 'Archivo enviado y comprobado correctamente.'
+                            : 'Todos los archivos se enviaron y comprobaron correctamente.', true);
+                    } else if (sentFiles > 0) {
+                        setBridgeState('paired', 'Transferencia parcial');
+                        showToast('Se enviaron ' + sentFiles + ' de ' + files.length + ' archivos. ' + failures[0], false);
+                    } else {
+                        setBridgeState('paired', 'No se pudo completar la transferencia');
+                        showToast(failures[0] || 'La transferencia no se completó. Comprueba la conexión y vuelve a intentarlo.', false);
+                    }
                 }
 
                 async function fetchFiles() {
