@@ -455,8 +455,13 @@
                     return { ok: true, progress: current, sha256: wholeFileHasher.hex() };
                 }
 
-                async function finalizeUpload(transferId) {
-                    let response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), { method: 'POST' });
+                async function finalizeUpload(transferId, expectedSha256) {
+                    const finishOptions = {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sha256: expectedSha256 })
+                    };
+                    let response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), finishOptions);
                     if (response.status === 401) {
                         return { revoked: true, message: 'La sesión se ha revocado.' };
                     }
@@ -466,7 +471,7 @@
                         const status = await getUploadStatus(transferId);
                         if (status.revoked) return { revoked: true, message: status.message };
                         if (status.ok && Number(status.status.received_bytes) === Number(status.status.size_bytes)) {
-                            response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), { method: 'POST' });
+                            response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), finishOptions);
                         }
                     }
                     if (!response.ok) {
@@ -587,11 +592,11 @@
 
                                 progressStatus.innerText = 'Verificando en disco ' + file.name + '…';
                                 cancelButton.disabled = true;
-                                const finished = await finalizeUpload(transferId);
+                                const finished = await finalizeUpload(transferId, chunks.sha256);
                                 cancelButton.disabled = false;
                                 if (finished.revoked || revocationHandled) break;
                                 if (!finished.ok) {
-                                    if ([400, 403, 404, 409, 413].includes(finished.status)) {
+                                    if ([400, 403, 404, 409, 413, 422].includes(finished.status)) {
                                         await cancelPendingUpload(transferId, storageKey);
                                     }
                                     throw new Error(finished.message || 'No se pudo finalizar la transferencia.');
