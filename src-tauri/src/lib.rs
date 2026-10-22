@@ -1191,6 +1191,21 @@ mod upload_filename_tests {
         assert_eq!(response.files[0].sha256, expected_hash);
         assert_eq!(response.files[0].size_bytes, data.len() as u64);
 
+        // Status must expose a typed completion receipt after publication, so the
+        // browser can recover even if the original HTTP response was lost.
+        let Json(status) = chunked_upload_status(
+            State(state.clone()),
+            Extension(session.clone()),
+            AxumPath(start.transfer_id.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status.completed_receipt.as_ref().map(|receipt| receipt.sha256.as_str()),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(status.received_bytes, data.len() as u64);
+
         // Simulate the client retrying /finish after the first response was lost.
         let Json(retried) = finish_chunked_upload(
             State(state.clone()),
