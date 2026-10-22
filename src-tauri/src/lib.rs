@@ -155,6 +155,8 @@ struct UploadProgressResponse {
     chunks_total: u64,
     chunk_size: usize,
     chunk_hashes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_receipt: Option<UploadReceipt>,
 }
 
 struct PendingUpload {
@@ -1681,6 +1683,7 @@ fn upload_progress(upload: &PendingUpload) -> UploadProgressResponse {
         chunks_total: chunks_for_size(upload.expected_size),
         chunk_size: UPLOAD_CHUNK_BYTES,
         chunk_hashes: upload.chunk_hashes.clone(),
+        completed_receipt: None,
     }
 }
 
@@ -1783,7 +1786,17 @@ async fn chunked_upload_status(
         completed.retain(|_, record| record.expires_at > Instant::now());
         if let Some(record) = completed.get(&transfer_id) {
             if record.owner_device_id == session.device_id && record.session_token == session.token {
-                return Ok(Json(UploadResponse { files: vec![record.receipt.clone()] }));
+                let chunks_total = chunks_for_size(record.receipt.size_bytes);
+                return Ok(Json(UploadProgressResponse {
+                    filename: record.receipt.filename.clone(),
+                    size_bytes: record.receipt.size_bytes,
+                    received_bytes: record.receipt.size_bytes,
+                    next_chunk: chunks_total,
+                    chunks_total,
+                    chunk_size: UPLOAD_CHUNK_BYTES,
+                    chunk_hashes: Vec::new(),
+                    completed_receipt: Some(record.receipt.clone()),
+                }));
             }
             return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
         }
