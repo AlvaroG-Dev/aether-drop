@@ -89,14 +89,17 @@ async fn share_pc_file(path: String, state: tauri::State<'_, AppState>) -> Resul
         let id = uuid::Uuid::new_v4().to_string();
         let mut files = state.pc_files.write().await;
         files.push((id, path_buf));
+        drop(files);
     }
     get_shared_files_internal(&state).await
 }
 
 #[tauri::command]
 async fn remove_pc_file(id: String, state: tauri::State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let mut files = state.pc_files.write().await;
-    files.retain(|(file_id, _)| file_id != &id);
+    {
+        let mut files = state.pc_files.write().await;
+        files.retain(|(file_id, _)| file_id != &id);
+    }
     get_shared_files_internal(&state).await
 }
 
@@ -112,9 +115,18 @@ async fn get_trusted_devices(state: tauri::State<'_, AppState>) -> Result<Vec<St
 
 #[tauri::command]
 async fn revoke_trusted_device(device_id: String, state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
-    let mut devices = state.trusted_devices.write().await;
-    devices.retain(|d| d != &device_id);
-    Ok(devices.clone())
+    // Mark the device untrusted first; auth middleware checks this list on every request.
+    {
+        let mut devices = state.trusted_devices.write().await;
+        devices.retain(|d| d != &device_id);
+    }
+    // Also discard every bearer token owned by this device. Locks are kept separate
+    // to maintain a consistent lock order with the authentication middleware.
+    {
+        let mut sessions = state.session_tokens.write().await;
+        sessions.retain(|_, session_device_id| session_device_id != &device_id);
+    }
+    Ok(state.trusted_devices.read().await.clone())
 }
 
 async fn get_shared_files_internal(state: &AppState) -> Result<Vec<serde_json::Value>, String> {
@@ -281,6 +293,8 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
               <p style="text-align:center;font-size:10px;color:#a0a6b5;margin:14px 0 0">Transferencia local · AetherDrop</p>
             </main>
             <script>
+                let activeUploadXhr = { current: null };
+                let revocationHandled = false;
                 let deviceId = localStorage.getItem('aether_device_id');
                 if (!deviceId) {
                     deviceId = 'dev_' + Math.random().toString(36).substring(2, 10);
@@ -297,6 +311,25 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                 function authHeaders() {
                     const token = localStorage.getItem('aether_token');
                     return token ? { 'Authorization': `Bearer ${token}` } : {};
+                }
+
+                function handleAuthorizationRevoked() {
+                    if (revocationHandled) return;
+                    revocationHandled = true;
+                    localStorage.removeItem('aether_token');
+                    const xhr = activeUploadXhr.current;
+                    if (xhr && xhr.readyState !== XMLHttpRequest.DONE) {
+                        xhr._aetherRevoked = true;
+                        xhr.abort();
+                    }
+                    activeUploadXhr.current = null;
+                    document.getElementById('mainApp').classList.add('hidden');
+                    document.getElementById('pinModal').classList.remove('hidden');
+                    document.getElementById('pinInput').value = '';
+                    const error = document.getElementById('pinError');
+                    error.textContent = 'Este dispositivo se ha desvinculado. Introduce de nuevo el PIN del ordenador para conectarlo.';
+                    error.classList.remove('hidden');
+                    setBridgeState('', 'Dispositivo desvinculado');
                 }
 
                 async function checkAuth() {
@@ -338,6 +371,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         if (res.ok) {
                             const authData = await res.json();
                             localStorage.setItem('aether_token', authData.token);
+                            revocationHandled = false;
                             pinError.classList.add('hidden');
                             document.getElementById('pinModal').classList.add('hidden');
                             document.getElementById('mainApp').classList.remove('hidden');
@@ -386,7 +420,12 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     progressBar.style.width = '0%';
                     progressPercent.innerText = '0%';
 
+                    if (activeUploadXhr.current && activeUploadXhr.current.readyState !== XMLHttpRequest.DONE) {
+                        showToast('Ya hay una transferencia en curso. Espera a que termine.', false);
+                        return;
+                    }
                     const xhr = new XMLHttpRequest();
+                    activeUploadXhr.current = xhr;
                     xhr.open('POST', '/upload', true);
                     const token = localStorage.getItem('aether_token');
                     if (token && token !== 'true') xhr.setRequestHeader('Authorization', `Bearer ${token}`);
@@ -400,7 +439,12 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     };
 
                     xhr.onload = () => {
+                        if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
                         progressContainer.classList.add('hidden');
+                        if (xhr.status === 401) {
+                            handleAuthorizationRevoked();
+                            return;
+                        }
                         if (xhr.status === 200) {
                             showToast(files.length > 1 ? "¡Todos los archivos enviados con éxito al PC!" : "¡Archivo enviado con éxito al PC!", true);
                             input.value = "";
@@ -423,12 +467,15 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     };
 
                     xhr.onerror = () => {
+                        if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
                         progressContainer.classList.add('hidden');
                         showToast("No se pudo conectar con el PC. Comprueba la Wi-Fi, el firewall y que AetherDrop siga abierto.", false);
                         setBridgeState('paired', 'Conexión interrumpida');
                     };
                     xhr.onabort = () => {
+                        if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
                         progressContainer.classList.add('hidden');
+                        if (xhr._aetherRevoked) return;
                         showToast("La subida se canceló antes de terminar. El archivo no se considera transferido.", false);
                         setBridgeState('paired', 'Transferencia cancelada');
                     };
@@ -439,6 +486,8 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                 async function fetchFiles() {
                     try {
                         const res = await fetch('/files', { headers: authHeaders() });
+                        if (res.status === 401) { handleAuthorizationRevoked(); return; }
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
                         const files = await res.json();
                         const list = document.getElementById('fileList');
                         if (files.length === 0) {
@@ -464,6 +513,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                 async function syncClipboard(force = false) {
                     try {
                         const res = await fetch('/clipboard', { headers: authHeaders(), cache: 'no-store' });
+                        if (res.status === 401) { handleAuthorizationRevoked(); return; }
                         if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
                         if (typeof data.text !== 'string') return;
@@ -484,6 +534,7 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                             headers: { 'Content-Type': 'application/json', ...authHeaders() },
                             body: JSON.stringify({ text })
                         });
+                        if (res.status === 401) { handleAuthorizationRevoked(); return; }
                         if (!res.ok) throw new Error('HTTP ' + res.status);
                         lastServerClipboard = text;
                         clipboardDirty = false;
@@ -522,8 +573,16 @@ async fn require_auth(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    let authorized = if let Some(token) = token {
-        { let sessions = state.session_tokens.read().await; if let Some(device_id) = sessions.get(token) { state.trusted_devices.read().await.contains(device_id) } else { false } }
+    // Clone the device ID before checking trust so no session lock is held while
+    // acquiring the trusted-device lock (revocation takes those locks separately).
+    let device_id = if let Some(token) = token {
+        let sessions = state.session_tokens.read().await;
+        sessions.get(token).cloned()
+    } else {
+        None
+    };
+    let authorized = if let Some(device_id) = device_id {
+        state.trusted_devices.read().await.contains(&device_id)
     } else {
         false
     };
