@@ -210,7 +210,7 @@
                     let data;
                     try { data = await response.json(); }
                     catch (_) { return { ok: false, message: 'El servidor devolvió una respuesta de inicio no válida.' }; }
-                    if (!data.transfer_id || Number(data.size_bytes) === -1 ||
+                    if (!data.transfer_id ||
                         !Number.isSafeInteger(Number(data.chunk_size)) ||
                         Number(data.chunk_size) < 1 ||
                         Number(data.chunks_total) !== Math.ceil(file.size / Number(data.chunk_size))) {
@@ -313,6 +313,7 @@
                         // js-sha256 is vendored under its MIT license because browsers
                         // do not expose SubtleCrypto on ordinary HTTP LAN IP origins.
                         const chunkHash = window.sha256(new Uint8Array(buffer));
+                        if (cancelRequested) return { cancelled: true, progress: current };
                         let response = await postUploadChunk(
                             transferId,
                             chunkIndex,
@@ -497,7 +498,9 @@
                                 }
 
                                 progressStatus.innerText = 'Verificando en disco ' + file.name + '…';
+                                cancelButton.disabled = true;
                                 const finished = await finalizeUpload(transferId);
+                                cancelButton.disabled = false;
                                 if (finished.revoked || revocationHandled) break;
                                 if (!finished.ok) {
                                     if ([400, 403, 404, 409, 413].includes(finished.status)) {
@@ -534,6 +537,7 @@
                     } finally {
                         uploadInProgress = false;
                         input.disabled = false;
+                        cancelButton.disabled = false;
                         cancelButton.classList.add('hidden');
                         progressContainer.classList.add('hidden');
                         activeUploadXhr.current = null;
