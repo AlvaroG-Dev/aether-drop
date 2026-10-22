@@ -623,6 +623,22 @@ async fn session_from_download_ticket(
     })
 }
 
+fn is_lan_peer_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(address) => {
+            !address.is_unspecified()
+                && (address.is_private()
+                    || address.is_loopback()
+                    || address.octets()[0] == 169 && address.octets()[1] == 254)
+        }
+        IpAddr::V6(address) => {
+            address.is_loopback()
+                || address.is_unique_local()
+                || address.is_unicast_link_local()
+        }
+    }
+}
+
 fn is_allowed_local_authority(authority: &str) -> bool {
     let Ok(parsed) = authority.parse::<axum::http::uri::Authority>() else {
         return false;
@@ -648,8 +664,17 @@ async fn require_auth(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
-    // The listener is exposed to the LAN. Reject arbitrary Host values to reduce
-    // DNS-rebinding access, and reject browser cross-origin requests when Origin exists.
+    // The TCP listener binds all interfaces for network-change tolerance, but this
+    // service is LAN-only: deny requests from publicly routable peer addresses.
+    let Some(peer) = request.extensions().get::<ConnectInfo<SocketAddr>>() else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if !is_lan_peer_address(peer.0.ip()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // Reject arbitrary Host values to reduce DNS-rebinding access, and reject
+    // browser cross-origin requests when Origin exists.
     let Some(host) = request.headers()
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -874,6 +899,7 @@ fn content_disposition_value(filename: &str) -> String {
 mod upload_filename_tests {
     use super::{
         auth_rate_limited, cancel_chunked_upload, chunks_for_size, content_disposition_value,
+        is_lan_peer_address,
         finish_chunked_upload, handle_auth, is_allowed_local_authority, origin_matches_authority,
         publish_temp_no_replace, record_auth_failure, sanitize_upload_filename,
         start_chunked_upload, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
@@ -1006,6 +1032,18 @@ mod upload_filename_tests {
         assert!(!tokio::fs::try_exists(&temp).await.unwrap());
 
         tokio::fs::remove_dir_all(&directory).await.unwrap();
+    }
+
+    #[test]
+    fn peer_validation_accepts_lan_addresses_and_rejects_public_peers() {
+        assert!(is_lan_peer_address("192.168.1.10".parse().unwrap()));
+        assert!(is_lan_peer_address("10.0.0.4".parse().unwrap()));
+        assert!(is_lan_peer_address("169.254.20.1".parse().unwrap()));
+        assert!(is_lan_peer_address("127.0.0.1".parse().unwrap()));
+        assert!(is_lan_peer_address("fd12:3456::1".parse().unwrap()));
+        assert!(!is_lan_peer_address("203.0.113.10".parse().unwrap()));
+        assert!(!is_lan_peer_address("8.8.8.8".parse().unwrap()));
+        assert!(!is_lan_peer_address("2001:4860:4860::8888".parse().unwrap()));
     }
 
     #[test]
