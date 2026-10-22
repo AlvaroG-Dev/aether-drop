@@ -8,10 +8,10 @@
   <style>
     :root{color-scheme:light;--bg:#f6f7fb;--surface:#fff;--ink:#182033;--muted:#778096;--line:#e8ebf2;--accent:#5b61e8;--accent-dark:#474dcc;--accent-soft:#f0f0ff;--green:#17876b;--green-soft:#eaf8f2;--shadow:0 12px 34px rgba(25,35,66,.055);--radius:20px}
     *{box-sizing:border-box}
-    body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.01em}
+    body{margin:0;min-height:100vh;overflow-x:hidden;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.01em}
     button{font:inherit;cursor:pointer}
     button:focus-visible{outline:3px solid #a5a7ff;outline-offset:3px}
-    .app{max-width:1060px;margin:0 auto;padding:28px 28px 24px}
+    .app{width:100%;max-width:1060px;margin:0 auto;padding:24px 24px 18px;overflow:hidden}
     .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:26px}
     .brand{display:flex;align-items:center;gap:12px}
     .brand-mark{width:42px;height:42px;border-radius:14px;background:var(--accent);display:grid;place-items:center;color:#fff;box-shadow:0 7px 16px #5b61e82b}
@@ -87,7 +87,9 @@
     .folder-copy{min-width:0;flex:1}
     .folder-copy .field-label{margin-bottom:2px}
     .folder-path{font-size:11px;color:#4f586c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .footer{display:flex;justify-content:space-between;gap:12px;color:#a0a6b5;font-size:10px;padding:15px 3px 0}
+    .footer{display:flex;justify-content:space-between;gap:12px;color:#a0a6b5;font-size:10px;padding:12px 3px 0}
+    .app-alert{display:none;margin:0 0 12px;padding:10px 12px;border-radius:10px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.app-alert.show{display:block}.app-alert.error{background:#fff2f4;border:1px solid #f5dfe4;color:#a8324a}.app-alert.success{background:#eef9f4;border:1px solid #d9f0e7;color:#167354}
+    .titlebar{height:38px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#f6f7fb;border-bottom:1px solid #e7eaf1;user-select:none}.titlebar-brand{font-size:11px;font-weight:750;color:#626b80;letter-spacing:.01em}.titlebar-controls{display:flex;gap:7px}.titlebar-btn{width:27px;height:24px;border:0;border-radius:7px;background:transparent;color:#667086;display:grid;place-items:center;font-size:13px}.titlebar-btn:hover{background:#e9ebf3}.titlebar-btn.close:hover{background:#e5484d;color:white}
     .footer span{display:flex;align-items:center;gap:6px}
     .footer svg{width:12px;height:12px}
     @keyframes packet{0%{transform:translateX(0) scale(.7);opacity:0}14%{opacity:1}85%{opacity:1}100%{transform:translateX(152px) scale(1.1);opacity:0}}
@@ -99,7 +101,9 @@
   </style>
 </head>
 <body>
+  <div class="titlebar"><div class="titlebar-brand" data-tauri-drag-region>AetherDrop</div><div class="titlebar-controls"><button class="titlebar-btn" onclick="window.minimizeApp()" aria-label="Minimizar">−</button><button class="titlebar-btn" onclick="window.toggleMaximizeApp()" aria-label="Maximizar">□</button><button class="titlebar-btn close" onclick="window.closeApp()" aria-label="Cerrar">×</button></div></div>
   <main class="app">
+    <div id="appAlert" class="app-alert" role="status" aria-live="polite"></div>
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">
@@ -172,6 +176,11 @@
   <script type="module">
     const { invoke } = window.__TAURI__.core;
     const { open } = window.__TAURI__.dialog;
+    const currentWindow = window.__TAURI__.window?.getCurrentWindow?.();
+    window.minimizeApp = () => currentWindow?.minimize();
+    window.toggleMaximizeApp = async () => { if (currentWindow) { if (await currentWindow.isMaximized()) await currentWindow.unmaximize(); else await currentWindow.maximize(); } };
+    window.closeApp = () => currentWindow?.close();
+    function showAppAlert(message, success=false) { const el=document.getElementById("appAlert"); el.textContent=message; el.className="app-alert show "+(success?"success":"error"); }
 
     async function initApp() {
       try {
@@ -197,24 +206,24 @@
           const newPath = await invoke('set_save_directory', { path: selected });
           document.getElementById('savePath').innerText = newPath;
         }
-      } catch (e) { console.error('No se pudo cambiar la carpeta:', e); }
+      } catch (e) { showAppAlert('No se pudo cambiar la carpeta: ' + String(e)); }
     };
 
     window.shareFile = async () => {
       try {
         const selected = await open({ multiple: false });
         if (selected) renderSharedFiles(await invoke('share_pc_file', { path: selected }));
-      } catch (e) { console.error('No se pudo compartir el archivo:', e); }
+      } catch (e) { showAppAlert('No se pudo añadir el archivo: ' + String(e)); }
     };
 
     window.removeFile = async (id) => {
-      try { renderSharedFiles(await invoke('remove_pc_file', { id })); }
-      catch (e) { console.error('No se pudo quitar el archivo:', e); }
+      try { renderSharedFiles(await invoke('remove_pc_file', { id })); showAppAlert('Archivo quitado de la lista de compartidos.', true); }
+      catch (e) { showAppAlert('No se pudo quitar el archivo: ' + String(e)); }
     };
 
     window.revokeDevice = async (deviceId) => {
-      try { renderDevices(await invoke('revoke_trusted_device', { deviceId })); }
-      catch (e) { console.error('No se pudo revocar el dispositivo:', e); }
+      try { renderDevices(await invoke('revoke_trusted_device', { deviceId })); showAppAlert('Dispositivo desvinculado.', true); }
+      catch (e) { showAppAlert('No se pudo desvincular el dispositivo: ' + String(e)); }
     };
 
     async function loadData() {
@@ -277,6 +286,8 @@
     }
 
     initApp();
+    // Keep the connection status fresh when a phone pairs after startup.
+    setInterval(async () => { try { renderDevices(await invoke('get_trusted_devices')); } catch (e) { showAppAlert('No se pudo actualizar el estado de los dispositivos: ' + String(e)); } }, 2000);
   </script>
 </body>
 </html>
