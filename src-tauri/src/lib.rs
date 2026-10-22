@@ -643,7 +643,7 @@ fn is_allowed_local_authority(authority: &str) -> bool {
     let Ok(parsed) = authority.parse::<axum::http::uri::Authority>() else {
         return false;
     };
-    let host = parsed.host().trim_matches(['[', ']']).trim_end_matches('.');
+    let host = parsed.host().trim_matches(&['[', ']'][..]).trim_end_matches('.');
     host.parse::<IpAddr>().is_ok()
         || host.eq_ignore_ascii_case("localhost")
         || host.eq_ignore_ascii_case("aetherdrop.local")
@@ -1044,6 +1044,17 @@ mod upload_filename_tests {
         assert!(!is_lan_peer_address("203.0.113.10".parse().unwrap()));
         assert!(!is_lan_peer_address("8.8.8.8".parse().unwrap()));
         assert!(!is_lan_peer_address("2001:4860:4860::8888".parse().unwrap()));
+    }
+
+    #[test]
+    fn only_private_or_link_local_peers_are_allowed() {
+        assert!(is_lan_peer_address(IpAddr::from_str("192.168.1.10").unwrap()));
+        assert!(is_lan_peer_address(IpAddr::from_str("10.0.0.2").unwrap()));
+        assert!(is_lan_peer_address(IpAddr::from_str("127.0.0.1").unwrap()));
+        assert!(is_lan_peer_address(IpAddr::from_str("169.254.5.10").unwrap()));
+        assert!(is_lan_peer_address(IpAddr::from_str("fd00::10").unwrap()));
+        assert!(!is_lan_peer_address(IpAddr::from_str("8.8.8.8").unwrap()));
+        assert!(!is_lan_peer_address(IpAddr::from_str("1.1.1.1").unwrap()));
     }
 
     #[test]
