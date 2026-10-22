@@ -90,6 +90,21 @@
         qr.src = info.qr_base64;
         document.getElementById('savePath').innerText = info.save_path;
         document.getElementById('pinDisplay').innerText = info.pin;
+
+        const webtransportStatus = document.getElementById('webtransportStatus');
+        const webtransportQr = document.getElementById('webtransportQr');
+        const webtransportLink = document.getElementById('webtransportProbeLink');
+        if (info.webtransport_probe_url && info.webtransport_probe_qr_base64) {
+          webtransportQr.src = info.webtransport_probe_qr_base64;
+          webtransportQr.hidden = false;
+          webtransportLink.href = info.webtransport_probe_url;
+          webtransportLink.style.display = 'inline-block';
+          webtransportStatus.textContent = 'Escanea este segundo QR desde el móvil para verificar el certificado y el canal cifrado. No envía archivos.';
+        } else {
+          webtransportStatus.textContent = info.webtransport_error
+            ? 'Prueba no disponible: ' + info.webtransport_error
+            : 'El canal seguro todavía se está iniciando. Reinicia la aplicación si no aparece.';
+        }
       } catch (e) {
         document.getElementById('serverUrl').innerText = 'Servidor local no disponible';
         document.getElementById('qrPlaceholder').textContent = 'Servidor no disponible';
