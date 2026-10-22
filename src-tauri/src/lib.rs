@@ -810,7 +810,7 @@ mod upload_filename_tests {
         publish_temp_no_replace, record_auth_failure, sanitize_upload_filename,
         start_chunked_upload, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
         DownloadTicket, SessionRecord, ServerStatus, UploadStartRequest, MAX_AUTH_FAILURES,
-        MAX_CONCURRENT_UPLOADS, MAX_PENDING_UPLOADS,
+        MAX_CONCURRENT_UPLOADS, MAX_PENDING_UPLOADS, UPLOAD_CHUNK_U64,
     };
     use axum::{
         body::Bytes,
