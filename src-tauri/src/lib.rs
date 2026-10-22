@@ -849,63 +849,169 @@ mod upload_filename_tests {
     }
 }
 
-// Streaming multipart receiver. Malformed multipart envelopes must never look successful.
-async fn handle_upload(State(state): State<AppState>, mut multipart: Multipart) -> (StatusCode, &'static str) {
+// Uploaded files are staged beside their destination, synced, read back and
+// SHA-256-verified, then atomically published without overwriting an existing file.
+async fn session_is_authorized(state: &AppState, session: &AuthorizedSession) -> bool {
+    if session.cancellation.is_cancelled() {
+        return false;
+    }
+    let now = Instant::now();
+    let valid_session = state.session_tokens.read().await
+        .get(&session.token)
+        .is_some_and(|record| {
+            record.device_id == session.device_id
+                && record.expires_at > now
+                && !record.cancellation.is_cancelled()
+        });
+    valid_session && state.trusted_devices.read().await.contains(&session.device_id)
+}
+
+async fn handle_upload(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthorizedSession>,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, (StatusCode, &'static str)> {
+    let _permit = state.upload_slots.clone().try_acquire_owned()
+        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Demasiadas transferencias simultáneas."))?;
     let mut received_fields = 0usize;
+    let mut total_bytes = 0u64;
+    let mut receipts = Vec::new();
+
     loop {
-        let mut field = match multipart.next_field().await {
+        let next_field = tokio::select! {
+            _ = session.cancellation.cancelled() => {
+                return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
+            }
+            result = multipart.next_field() => result,
+        };
+        let mut field = match next_field {
             Ok(Some(field)) => field,
             Ok(None) => break,
-            Err(_) => return (StatusCode::BAD_REQUEST, "Invalid multipart request"),
+            Err(_) => return Err((StatusCode::BAD_REQUEST, "La petición multipart no es válida.")),
         };
         received_fields += 1;
+        if received_fields > MAX_UPLOAD_FILES {
+            return Err((StatusCode::PAYLOAD_TOO_LARGE, "La transferencia supera el límite de archivos."));
+        }
 
         let supplied_name = field.file_name()
-            .map(|s| s.replace('\\', "/"))
+            .map(str::to_owned)
             .unwrap_or_else(|| format!("archivo_{}.bin", uuid::Uuid::new_v4()));
-        // Never trust a client-provided path. Keep only a short, plain filename.
         let Some(file_name) = sanitize_upload_filename(&supplied_name) else {
-            return (StatusCode::BAD_REQUEST, "Invalid filename");
+            return Err((StatusCode::BAD_REQUEST, "El nombre del archivo no es válido."));
         };
 
         let dir = state.save_dir.read().await.clone();
-        if tokio::fs::create_dir_all(&dir).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Cannot prepare destination");
-        }
+        tokio::fs::create_dir_all(&dir).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo preparar la carpeta de destino."))?;
         let filepath = dir.join(&file_name);
+        let temp_path = dir.join(format!(".aetherdrop-upload-{}.part", uuid::Uuid::new_v4()));
 
-        // create_new prevents an upload from silently overwriting an existing file.
-        let mut file = match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&filepath).await {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return (StatusCode::CONFLICT, "File already exists");
-            }
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Cannot create destination file"),
-        };
-        loop {
-            match field.try_next().await {
-                Ok(Some(chunk)) => {
-                    if file.write_all(&chunk).await.is_err() {
-                        let _ = tokio::fs::remove_file(&filepath).await;
-                        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed writing upload");
+        // Do not clean up a path if create_new fails: an existing file may own it.
+        let temp_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo crear el archivo temporal."))?;
+
+        let received: Result<UploadReceipt, (StatusCode, &'static str)> = async {
+            let mut output = temp_file;
+            let mut stream_hash = Sha256::new();
+            let mut file_size = 0u64;
+            loop {
+                let next_chunk = tokio::select! {
+                    _ = session.cancellation.cancelled() => {
+                        return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
                     }
+                    result = field.try_next() => result,
+                };
+                let chunk = match next_chunk {
+                    Ok(Some(chunk)) => chunk,
+                    Ok(None) => break,
+                    Err(_) => return Err((StatusCode::BAD_REQUEST, "La subida se ha interrumpido o el contenido no es válido.")),
+                };
+                let chunk_size = chunk.len() as u64;
+                if file_size.saturating_add(chunk_size) > MAX_UPLOAD_FILE_BYTES {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, "El archivo supera el límite permitido."));
                 }
-                Ok(None) => break,
-                Err(_) => {
-                    let _ = tokio::fs::remove_file(&filepath).await;
-                    return (StatusCode::BAD_REQUEST, "Invalid upload stream");
+                if total_bytes.saturating_add(chunk_size) > MAX_UPLOAD_REQUEST_BYTES as u64 {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, "La petición supera el límite total permitido."));
                 }
+                output.write_all(&chunk).await
+                    .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo escribir el archivo; comprueba el espacio disponible."))?;
+                stream_hash.update(&chunk);
+                file_size += chunk_size;
+                total_bytes += chunk_size;
+            }
+
+            output.flush().await
+                .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo finalizar la escritura del archivo."))?;
+            output.sync_all().await
+                .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo sincronizar el archivo con el disco."))?;
+            drop(output);
+
+            let received_digest = format!("{:x}", stream_hash.finalize());
+            let mut verification_file = tokio::fs::File::open(&temp_path).await
+                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo verificar el archivo guardado."))?;
+            let mut verification_hash = Sha256::new();
+            let mut verified_size = 0u64;
+            let mut buffer = vec![0u8; 128 * 1024];
+            loop {
+                let count = verification_file.read(&mut buffer).await
+                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Falló la lectura de verificación del archivo."))?;
+                if count == 0 {
+                    break;
+                }
+                verified_size += count as u64;
+                verification_hash.update(&buffer[..count]);
+            }
+            let verified_digest = format!("{:x}", verification_hash.finalize());
+            if verified_size != file_size || verified_digest != received_digest {
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, "La verificación de integridad del archivo ha fallado."));
+            }
+
+            Ok(UploadReceipt {
+                filename: file_name.clone(),
+                size_bytes: file_size,
+                sha256: verified_digest,
+            })
+        }.await;
+
+        let receipt = match received {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(error);
+            }
+        };
+        if !session_is_authorized(&state, &session).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado o la sesión ha caducado."));
+        }
+
+        match tokio::fs::hard_link(&temp_path, &filepath).await {
+            Ok(()) => {
+                if let Err(error) = tokio::fs::remove_file(&temp_path).await {
+                    eprintln!("AetherDrop: no se pudo retirar el temporal {:?}: {}", temp_path, error);
+                }
+                receipts.push(receipt);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::CONFLICT, "Ya existe un archivo con ese nombre. Cambia el nombre y vuelve a intentarlo."));
+            }
+            Err(_) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, "El sistema de archivos no permite publicar el archivo de forma atómica."));
             }
         }
-        if file.flush().await.is_err() {
-            let _ = tokio::fs::remove_file(&filepath).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed finalizing upload");
-        }
     }
+
     if received_fields == 0 {
-        return (StatusCode::BAD_REQUEST, "No files supplied");
+        return Err((StatusCode::BAD_REQUEST, "No se ha recibido ningún archivo."));
     }
-    (StatusCode::OK, "OK")
+    Ok(Json(UploadResponse { files: receipts }))
 }
 
 async fn list_pc_files(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
@@ -917,22 +1023,54 @@ async fn list_pc_files(State(state): State<AppState>) -> Json<Vec<serde_json::Va
     Json(list)
 }
 
-async fn download_pc_file(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    let files = state.pc_files.read().await;
-    if let Some((_, path)) = files.iter().find(|(file_id, _)| file_id == &id) {
-        if let Ok(bytes) = tokio::fs::read(path).await {
-            let filename = path.file_name().unwrap_or_default().to_string_lossy();
-            let disposition = content_disposition_value(&filename);
-            if let Ok(response) = axum::response::Response::builder()
-                .header("Content-Disposition", disposition)
-                .body(axum::body::Body::from(bytes))
-            {
-                return response;
+async fn download_pc_file(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthorizedSession>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    // Release the shared file-list lock before opening/streaming the file.
+    let path = {
+        let files = state.pc_files.read().await;
+        files.iter().find(|(file_id, _)| file_id == &id).map(|(_, path)| path.clone())
+    };
+    let Some(path) = path else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let metadata = match file.metadata().await {
+        Ok(metadata) => metadata,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let disposition = content_disposition_value(&filename);
+    let stream_state = state.clone();
+    let stream_session = session.clone();
+    let stream = ReaderStream::new(file).and_then(move |chunk| {
+        let state = stream_state.clone();
+        let session = stream_session.clone();
+        async move {
+            if !session_is_authorized(&state, &session).await {
+                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Session revoked"));
             }
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            Ok::<Bytes, std::io::Error>(chunk)
         }
+    });
+
+    match axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Disposition", disposition)
+        .header("Content-Type", "application/octet-stream")
+        .header("Content-Length", metadata.len().to_string())
+        .header("X-Content-Type-Options", "nosniff")
+        .body(axum::body::Body::from_stream(stream))
+    {
+        Ok(response) => response,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
-    axum::http::StatusCode::NOT_FOUND.into_response()
 }
 
 async fn get_clipboard(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -940,13 +1078,22 @@ async fn get_clipboard(State(state): State<AppState>) -> Json<serde_json::Value>
     Json(serde_json::json!({ "text": text }))
 }
 
-async fn set_clipboard(State(state): State<AppState>, Json(payload): Json<ClipboardRequest>) -> &'static str {
-    let mut cb = state.clipboard_text.write().await;
-    *cb = payload.text.clone();
-    if let Ok(mut clipboard) = Clipboard::new() {
-        let _ = clipboard.set_text(payload.text);
+async fn set_clipboard(
+    State(state): State<AppState>,
+    Json(payload): Json<ClipboardRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if payload.text.len() > MAX_CLIPBOARD_BYTES {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "El texto supera el límite de 1 MiB.".to_owned()));
     }
-    "OK"
+    let text = payload.text;
+    let system_text = text.clone();
+    let apply_result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let mut clipboard = Clipboard::new().map_err(|error| format!("No se pudo abrir el portapapeles del sistema: {}", error))?;
+        clipboard.set_text(system_text).map_err(|error| format!("No se pudo actualizar el portapapeles del sistema: {}", error))
+    }).await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Falló la tarea del portapapeles: {}", error)))?;
+    apply_result.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    *state.clipboard_text.write().await = text;
+    Ok(StatusCode::OK)
 }
 
 fn start_local_server(state: AppState) {
