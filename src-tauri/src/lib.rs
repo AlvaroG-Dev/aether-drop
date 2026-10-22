@@ -805,15 +805,73 @@ fn content_disposition_value(filename: &str) -> String {
 #[cfg(test)]
 mod upload_filename_tests {
     use super::{
-        auth_rate_limited, content_disposition_value, is_allowed_local_authority,
-        origin_matches_authority, publish_temp_no_replace, record_auth_failure,
-        sanitize_upload_filename, AuthFailureState, MAX_AUTH_FAILURES,
+        auth_rate_limited, cancel_chunked_upload, chunks_for_size, content_disposition_value,
+        finish_chunked_upload, is_allowed_local_authority, origin_matches_authority,
+        publish_temp_no_replace, record_auth_failure, sanitize_upload_filename,
+        start_chunked_upload, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
+        DownloadTicket, SessionRecord, ServerStatus, UploadStartRequest, MAX_AUTH_FAILURES,
+        UPLOAD_CHUNK_U64, MAX_CONCURRENT_UPLOADS, MAX_PENDING_UPLOADS,
+    };
+    use axum::{
+        body::Bytes,
+        extract::{Extension, Path as AxumPath, State},
+        http::{HeaderMap, HeaderValue, StatusCode},
+        Json,
     };
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
     use std::net::IpAddr;
+    use std::path::{Path, PathBuf};
     use std::str::FromStr;
-    use std::time::Instant;
+    use std::sync::{atomic::AtomicU64, Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tokio::sync::{RwLock, Semaphore};
+    use tokio_util::sync::CancellationToken;
+
+    fn test_state(directory: PathBuf) -> (AppState, AuthorizedSession) {
+        let device_id = "dev_test_device".to_owned();
+        let token = "test-session-token".to_owned();
+        let expires_at = Instant::now() + Duration::from_secs(600);
+        let cancellation = CancellationToken::new();
+        let session = AuthorizedSession {
+            token: token.clone(),
+            device_id: device_id.clone(),
+            expires_at,
+            cancellation: cancellation.clone(),
+        };
+        let state = AppState {
+            save_dir: Arc::new(RwLock::new(directory)),
+            pc_files: Arc::new(RwLock::new(Vec::new())),
+            pin: "123456".to_owned(),
+            trusted_devices: Arc::new(RwLock::new(vec![device_id.clone()])),
+            clipboard_text: Arc::new(RwLock::new(String::new())),
+            session_tokens: Arc::new(RwLock::new(HashMap::from([(
+                token,
+                SessionRecord {
+                    device_id,
+                    expires_at,
+                    cancellation,
+                },
+            )]))),
+            auth_failures: Arc::new(RwLock::new(HashMap::new())),
+            upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            pending_upload_slots: Arc::new(Semaphore::new(MAX_PENDING_UPLOADS)),
+            pending_uploads: Arc::new(RwLock::new(HashMap::new())),
+            reserved_upload_bytes: Arc::new(AtomicU64::new(0)),
+            download_tickets: Arc::new(RwLock::new(HashMap::<String, DownloadTicket>::new())),
+            server_status: Arc::new(RwLock::new(ServerStatus::Ready)),
+            server_shutdown: CancellationToken::new(),
+            mdns_daemon: Arc::new(Mutex::new(None)),
+        };
+        (state, session)
+    }
+
+    async fn test_directory() -> PathBuf {
+        let directory = std::env::temp_dir()
+            .join(format!("aetherdrop-chunk-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        directory
+    }
 
     #[test]
     fn strips_unix_and_windows_path_components() {
@@ -919,6 +977,113 @@ mod upload_filename_tests {
         assert_eq!(chunks_for_size(UPLOAD_CHUNK_U64), 1);
         assert_eq!(chunks_for_size(UPLOAD_CHUNK_U64 + 1), 2);
         assert_eq!(chunks_for_size(2 * 1024 * 1024 * 1024), 256);
+    }
+
+    #[tokio::test]
+    async fn chunked_upload_writes_verifies_and_atomically_publishes_file() {
+        let directory = test_directory().await;
+        let (state, session) = test_state(directory.clone()).await;
+        let data = b"AetherDrop chunk-integrity integration test".to_vec();
+        let expected_hash = format!("{:x}", Sha256::digest(&data));
+        let Json(start) = start_chunked_upload(
+            State(state.clone()),
+            Extension(session.clone()),
+            Json(UploadStartRequest {
+                filename: "roundtrip.bin".to_owned(),
+                size_bytes: data.len() as u64,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(start.chunks_total, 1);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-chunk-sha256", HeaderValue::from_str(&expected_hash).unwrap());
+        let Json(progress) = upload_chunk(
+            State(state.clone()),
+            Extension(session.clone()),
+            AxumPath((start.transfer_id.clone(), 0)),
+            headers,
+            Bytes::from(data.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(progress.received_bytes, data.len() as u64);
+        assert_eq!(progress.next_chunk, 1);
+        assert_eq!(progress.chunk_hashes, vec![expected_hash.clone()]);
+
+        let Json(response) = finish_chunked_upload(
+            State(state.clone()),
+            Extension(session),
+            AxumPath(start.transfer_id),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.files.len(), 1);
+        assert_eq!(response.files[0].sha256, expected_hash);
+        assert_eq!(response.files[0].size_bytes, data.len() as u64);
+        assert_eq!(tokio::fs::read(directory.join("roundtrip.bin")).await.unwrap(), data);
+        assert_eq!(state.reserved_upload_bytes.load(Ordering::Acquire), 0);
+        assert!(state.pending_uploads.read().await.is_empty());
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bad_chunk_hash_does_not_advance_or_write_and_cancel_cleans_temp_file() {
+        let directory = test_directory().await;
+        let (state, session) = test_state(directory.clone()).await;
+        let data = b"must not be written under the wrong digest".to_vec();
+        let Json(start) = start_chunked_upload(
+            State(state.clone()),
+            Extension(session.clone()),
+            Json(UploadStartRequest {
+                filename: "must-not-exist.bin".to_owned(),
+                size_bytes: data.len() as u64,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-chunk-sha256",
+            HeaderValue::from_static("0000000000000000000000000000000000000000000000000000000000000000"),
+        );
+        let error = upload_chunk(
+            State(state.clone()),
+            Extension(session.clone()),
+            AxumPath((start.transfer_id.clone(), 0)),
+            headers,
+            Bytes::from(data),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+
+        let Json(status) = super::chunked_upload_status(
+            State(state.clone()),
+            Extension(session.clone()),
+            AxumPath(start.transfer_id.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.next_chunk, 0);
+        assert_eq!(status.received_bytes, 0);
+        assert_eq!(tokio::fs::metadata(&status.filename).await.is_err(), true);
+
+        assert_eq!(
+            cancel_chunked_upload(
+                State(state.clone()),
+                Extension(session),
+                AxumPath(start.transfer_id),
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(state.reserved_upload_bytes.load(Ordering::Acquire), 0);
+        assert!(state.pending_uploads.read().await.is_empty());
+        assert!(tokio::fs::read_dir(&directory).await.unwrap().next_entry().await.unwrap().is_none());
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
     }
 
     #[test]
