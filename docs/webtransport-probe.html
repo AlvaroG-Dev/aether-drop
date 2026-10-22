@@ -1,2 +1,108 @@
 <!doctype html>
-<html lang="es"><meta charset="utf-8"><title>AetherDrop WebTransport probe</title><body><h1>AetherDrop WebTransport probe</h1><p>Experimental TLS pairing test.</p></body></html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>AetherDrop · Prueba TLS local</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0b0d12;color:#eef2f8}
+*{box-sizing:border-box}body{margin:0;min-height:100svh;display:grid;place-items:center;padding:22px}
+main{width:min(100%,520px);border:1px solid #252b37;border-radius:22px;padding:26px;background:#121620;box-shadow:0 24px 80px #0005}
+h1{font-size:1.5rem;margin:0 0 8px}p{color:#aeb8c8;line-height:1.55}.tag{font-size:.75rem;text-transform:uppercase;letter-spacing:.12em;color:#94a8c9}
+label{display:block;margin:22px 0 8px;font-size:.9rem;color:#c9d2df}input{width:100%;border:1px solid #374154;background:#090c12;color:#fff;border-radius:12px;padding:14px;font:inherit;letter-spacing:.16em}
+button{width:100%;border:0;border-radius:12px;padding:14px;margin-top:14px;background:#dce8ff;color:#101522;font:600 1rem system-ui;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+#status{margin-top:18px;border:1px solid #30394a;background:#0c1018;border-radius:12px;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.small{font-size:.8rem;color:#8d9aae}.ok{color:#86efac}.bad{color:#fda4af}
+</style>
+</head>
+<body>
+<main>
+  <div class="tag">AetherDrop · Experimento aislado</div>
+  <h1>Verificación TLS local</h1>
+  <p>Esta página comprueba que el navegador puede autenticar el certificado efímero del PC por su huella SHA-256 y abrir un canal WebTransport cifrado por la Wi-Fi. No transmite archivos y no utiliza un servidor de retransmisión.</p>
+  <label for="pin">PIN mostrado en AetherDrop</label>
+  <input id="pin" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000">
+  <button id="connect">Verificar conexión segura</button>
+  <div id="status" role="status" aria-live="polite">Preparando comprobaciones…</div>
+  <p class="small">No hay fallback a HTTP. Si WebTransport, el acceso a la red local o la huella del certificado no son compatibles, la prueba falla.</p>
+</main>
+<script type="module">
+const status = document.getElementById('status');
+const button = document.getElementById('connect');
+const params = new URLSearchParams(location.search);
+const host = params.get('host') || '';
+const hash = params.get('hash') || '';
+const validHost = /^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host) &&
+  host.split('.').every(part => Number(part) >= 0 && Number(part) <= 255);
+const validHash = /^[a-f0-9]{64}$/i.test(hash);
+const secure = window.isSecureContext === true;
+const supported = typeof window.WebTransport === 'function';
+
+function setStatus(message, kind = '') {
+  status.className = kind;
+  status.textContent = message;
+}
+function hexToBytes(value) {
+  return Uint8Array.from(value.match(/.{2}/g), byte => Number.parseInt(byte, 16));
+}
+setStatus(
+  'Contexto seguro: ' + (secure ? 'sí' : 'no') +
+  '\\nWebTransport: ' + (supported ? 'disponible' : 'no disponible') +
+  '\\nHost LAN: ' + (validHost ? host : 'inválido o ausente') +
+  '\\nHuella SHA-256: ' + (validHash ? 'válida' : 'inválida o ausente')
+);
+button.disabled = !secure || !supported || !validHost || !validHash;
+button.addEventListener('click', async () => {
+  const pin = document.getElementById('pin').value.trim();
+  if (!/^[0-9]{6}$/.test(pin)) {
+    setStatus('Introduce el PIN de seis cifras que aparece en el PC.', 'bad');
+    return;
+  }
+  button.disabled = true;
+  let transport;
+  try {
+    setStatus('Estableciendo WebTransport y verificando la huella del certificado…');
+    const url = 'https://' + host + ':8443/aetherdrop-wt-probe-v1';
+    transport = new WebTransport(url, {
+      allowPooling: false,
+      requireUnreliable: true,
+      serverCertificateHashes: [{ algorithm: 'sha-256', value: hexToBytes(hash) }]
+    });
+    await Promise.race([
+      transport.ready,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Tiempo agotado al conectar. Comprueba la Wi-Fi, el puerto UDP 8443 y los permisos de red local.')), 10000))
+    ]);
+    const stream = await transport.createBidirectionalStream();
+    const writer = stream.writable.getWriter();
+    await writer.write(new TextEncoder().encode(JSON.stringify({ type: 'pair', pin }) + '\\n'));
+    await writer.close();
+
+    const reader = stream.readable.getReader();
+    let responseText = '';
+    while (responseText.length < 512) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      responseText += new TextDecoder().decode(value, { stream: true });
+      if (responseText.includes('\\n')) break;
+    }
+    const responseLine = responseText.split('\\n')[0];
+    const response = JSON.parse(responseLine);
+    if (!response.ok || response.protocol !== 'aetherdrop-webtransport-v1') {
+      throw new Error('El PC rechazó el PIN o la versión del protocolo.');
+    }
+    setStatus('Conexión autenticada correctamente.\\n\\n✓ Certificado TLS validado por SHA-256\\n✓ Canal WebTransport cifrado activo\\n✓ PIN de vinculación aceptado\\n\\nEsta prueba no ha enviado archivos.', 'ok');
+    await reader.cancel().catch(() => {});
+    transport.close({ closeCode: 0, reason: 'Prueba completada' });
+  } catch (error) {
+    if (transport) {
+      try { transport.close({ closeCode: 1, reason: 'Prueba fallida' }); } catch (_) {}
+    }
+    setStatus('No se pudo validar el canal seguro.\\n\\n' + String(error?.message || error) + '\\n\\nNo se ha usado una conexión insegura.', 'bad');
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
