@@ -338,6 +338,8 @@
                 }
 
                 async function transferFileInChunks(file, transferId, status, totalBytes, completedBytes) {
+                    if (cancelRequested) return { cancelled: true, progress: status };
+                    if (revocationHandled) return { revoked: true, progress: status };
                     const chunkSize = Number(status.chunk_size);
                     if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) {
                         return { ok: false, status: 500, message: 'El tamaño de bloque del servidor no es válido.' };
@@ -455,6 +457,8 @@
                             retryable: response.retryable
                         };
                     }
+                    if (cancelRequested) return { cancelled: true, progress: current };
+                    if (revocationHandled) return { revoked: true, progress: current };
                     return { ok: true, progress: current, sha256: wholeFileHasher.hex() };
                 }
 
