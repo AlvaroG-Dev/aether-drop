@@ -34,6 +34,8 @@ const MAX_UPLOAD_FILES: usize = 32;
 const MAX_CONCURRENT_UPLOADS: usize = 3;
 const MAX_SHARED_FILES: usize = 256;
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
+const MAX_CLIPBOARD_REQUEST_BYTES: usize = 6 * 1024 * 1024;
+const MAX_AUTH_REQUEST_BYTES: usize = 4 * 1024;
 const MAX_TRACKED_AUTH_IPS: usize = 1024;
 const MAX_AUTH_FAILURES: u32 = 10;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
@@ -1311,16 +1313,15 @@ fn start_local_server(state: AppState) {
             let app = Router::new()
                 .route("/", get(serve_ui))
                 .route("/mobile.js", get(serve_mobile_js))
-                .route("/auth", post(handle_auth))
+                .route("/auth", post(handle_auth).layer(DefaultBodyLimit::max(MAX_AUTH_REQUEST_BYTES)))
                 .route("/session", get(check_session))
-                .route("/upload", post(handle_upload))
+                .route("/upload", post(handle_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_REQUEST_BYTES)))
                 .route("/files", get(list_pc_files))
                 .route("/download-ticket/:id", post(create_download_ticket))
                 .route("/download/:id", get(download_pc_file))
-                .route("/clipboard", get(get_clipboard).post(set_clipboard))
+                .route("/clipboard", get(get_clipboard).post(set_clipboard).layer(DefaultBodyLimit::max(MAX_CLIPBOARD_REQUEST_BYTES)))
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
-                .with_state(state)
-                .layer(DefaultBodyLimit::max(MAX_UPLOAD_REQUEST_BYTES));
+                .with_state(state);
 
             if let Err(error) = axum::serve(
                 listener,
