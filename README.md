@@ -13,16 +13,18 @@ AetherDrop es un prototipo de escritorio construido con Rust + Tauri 2 y Axum. E
 - Cada archivo se escribe en un temporal aleatorio situado en la misma carpeta de destino.
 - Antes de publicarlo, el servidor sincroniza el temporal, calcula SHA-256 sobre el flujo recibido y vuelve a leer el temporal en bloques de 128 KiB. Comprueba que tamaño y hash de los bytes guardados coinciden con los del flujo.
 - Publicación sin sobrescritura mediante un enlace duro atómico. Si el nombre ya existe, la operación devuelve conflicto; no reemplaza el archivo anterior.
-- Un archivo por petición HTTP de subida. Si el usuario elige varios, el cliente los envía secuencialmente y comunica resultados parciales sin presentar como correcto un archivo fallido.
+- Subidas reanudables en bloques de 8 MiB. El servidor confirma el índice y SHA-256 de cada bloque, guarda solo el siguiente bloque esperado y comprueba el hash del archivo completo antes de publicarlo.
+- Los reintentos consultan el estado del servidor para no duplicar bloques aceptados cuya respuesta se perdió. El cliente verifica que los bloques anteriores correspondan al archivo seleccionado antes de reanudar y compara el hash final completo.
+- La transferencia temporal se puede cancelar. Revocar un dispositivo o caducar una sesión cancela sus transferencias pendientes; los errores transitorios permiten reanudar durante un máximo de dos horas mientras el servidor siga en ejecución.
 - Descargas por streaming; el servidor no hace `read()` del archivo entero.
 - Tickets de descarga aleatorios, de un solo uso, vinculados al dispositivo, archivo y sesión, con expiración de 60 segundos.
-- Temporales incompletos se eliminan al producirse un error y los temporales abandonados con más de 24 horas se limpian en el arranque, al cambiar de carpeta y periódicamente.
+- Temporales cancelados/fallidos se limpian cuando termina la operación. Los temporales abandonados con más de 24 horas se limpian al arrancar, al cambiar de carpeta y en tareas periódicas.
 
 ### Límites actuales
-- Tamaño máximo del cuerpo de subida: 2 GiB.
-- Máximo por archivo: 2 GiB menos 1 MiB para dejar margen al envoltorio multipart.
-- Máximo de tres subidas simultáneas.
-- El cliente permite elegir hasta 32 archivos en una selección, enviándolos como peticiones independientes.
+- Máximo de 2 GiB por archivo.
+- Bloques de 8 MiB y hasta tres peticiones de transferencia/escritura concurrentes.
+- Máximo de 24 transferencias pendientes en el servidor.
+- El cliente permite elegir hasta 32 archivos en una selección; se transfieren secuencialmente y se comunica el resultado individual/partial.
 - Máximo de 256 archivos en la lista «Archivos para enviar».
 - Portapapeles limitado a 1 MiB de texto.
 - Las peticiones de autenticación tienen limitación de intentos por IP y los bloqueos y sesiones caducadas se limpian periódicamente.
