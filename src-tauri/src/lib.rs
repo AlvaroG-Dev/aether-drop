@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ConnectInfo, DefaultBodyLimit, Extension, Multipart, Path, State},
+
     middleware::{self, Next},
     http::{Request, StatusCode},
     response::IntoResponse,
@@ -7,7 +7,6 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
-use futures_util::TryStreamExt;
 use local_ip_address::local_ip;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -28,9 +27,7 @@ use serde::{Deserialize, Serialize};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use arboard::Clipboard;
 
-const MAX_UPLOAD_REQUEST_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_FILE_BYTES: u64 = MAX_UPLOAD_REQUEST_BYTES as u64 - 1024 * 1024;
-const MAX_UPLOAD_FILES: usize = 32;
 const MAX_CONCURRENT_UPLOADS: usize = 3;
 const MAX_PENDING_UPLOADS: usize = 24;
 const UPLOAD_CHUNK_BYTES: usize = 8 * 1024 * 1024;
@@ -40,7 +37,6 @@ const MAX_SHARED_FILES: usize = 256;
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const MAX_CLIPBOARD_REQUEST_BYTES: usize = 6 * 1024 * 1024;
 const MAX_AUTH_REQUEST_BYTES: usize = 4 * 1024;
-const DISK_SPACE_CHECK_INTERVAL: u64 = 16 * 1024 * 1024;
 const DISK_SPACE_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TRACKED_AUTH_IPS: usize = 1024;
 const MAX_AUTH_FAILURES: u32 = 10;
@@ -998,214 +994,6 @@ async fn session_is_authorized(state: &AppState, session: &AuthorizedSession) ->
     valid_session && state.trusted_devices.read().await.contains(&session.device_id)
 }
 
-async fn handle_upload(
-    State(state): State<AppState>,
-    Extension(session): Extension<AuthorizedSession>,
-    mut multipart: Multipart,
-) -> Result<Json<UploadResponse>, (StatusCode, &'static str)> {
-    let _permit = state.upload_slots.clone().try_acquire_owned()
-        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Demasiadas transferencias simultáneas."))?;
-    let mut received_fields = 0usize;
-    let mut total_bytes = 0u64;
-    let mut receipts = Vec::new();
-
-    loop {
-        let next_field = tokio::select! {
-            _ = state.server_shutdown.cancelled() => {
-                return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
-            }
-            _ = session.cancellation.cancelled() => {
-                return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
-            }
-            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
-                return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."));
-            }
-            result = multipart.next_field() => result,
-        };
-        let mut field = match next_field {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(_) => return Err((StatusCode::BAD_REQUEST, "La petición multipart no es válida.")),
-        };
-        received_fields += 1;
-        if received_fields > MAX_UPLOAD_FILES {
-            return Err((StatusCode::PAYLOAD_TOO_LARGE, "La transferencia supera el límite de archivos."));
-        }
-
-        let supplied_name = field.file_name()
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("archivo_{}.bin", uuid::Uuid::new_v4()));
-        let Some(file_name) = sanitize_upload_filename(&supplied_name) else {
-            return Err((StatusCode::BAD_REQUEST, "El nombre del archivo no es válido."));
-        };
-
-        let dir = state.save_dir.read().await.clone();
-        tokio::fs::create_dir_all(&dir).await
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo preparar la carpeta de destino."))?;
-        let filepath = dir.join(&file_name);
-        let temp_path = dir.join(format!(".aetherdrop-upload-{}.part", uuid::Uuid::new_v4()));
-
-        // Do not clean up a path if create_new fails: an existing file may own it.
-        let temp_file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-            .await
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo crear el archivo temporal."))?;
-
-        let received: Result<UploadReceipt, (StatusCode, &'static str)> = async {
-            let mut output = temp_file;
-            let mut stream_hash = Sha256::new();
-            let mut file_size = 0u64;
-            let mut last_disk_check = 0u64;
-            loop {
-                let next_chunk = tokio::select! {
-                    _ = state.server_shutdown.cancelled() => {
-                        return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
-                    }
-                    _ = session.cancellation.cancelled() => {
-                        return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
-                    }
-                    _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
-                        return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."));
-                    }
-                    result = field.try_next() => result,
-                };
-                let chunk = match next_chunk {
-                    Ok(Some(chunk)) => chunk,
-                    Ok(None) => break,
-                    Err(_) => return Err((StatusCode::BAD_REQUEST, "La subida se ha interrumpido o el contenido no es válido.")),
-                };
-                let chunk_size = chunk.len() as u64;
-                if file_size.saturating_add(chunk_size) > MAX_UPLOAD_FILE_BYTES {
-                    return Err((StatusCode::PAYLOAD_TOO_LARGE, "El archivo supera el límite permitido."));
-                }
-                if total_bytes.saturating_add(chunk_size) > MAX_UPLOAD_REQUEST_BYTES as u64 {
-                    return Err((StatusCode::PAYLOAD_TOO_LARGE, "La petición supera el límite total permitido."));
-                }
-                if file_size == 0
-                    || file_size.saturating_sub(last_disk_check) >= DISK_SPACE_CHECK_INTERVAL
-                {
-                    let path_for_check = dir.clone();
-                    let available = tokio::task::spawn_blocking(move || fs2::available_space(path_for_check))
-                        .await
-                        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo comprobar el espacio libre."))?
-                        .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo consultar el espacio disponible en el disco."))?;
-                    if available < DISK_SPACE_RESERVE_BYTES.saturating_add(chunk_size) {
-                        return Err((StatusCode::INSUFFICIENT_STORAGE, "El disco está casi lleno; libera espacio antes de subir el archivo."));
-                    }
-                    last_disk_check = file_size;
-                }
-                output.write_all(&chunk).await
-                    .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo escribir el archivo; comprueba el espacio disponible."))?;
-                stream_hash.update(&chunk);
-                file_size += chunk_size;
-                total_bytes += chunk_size;
-            }
-
-            output.flush().await
-                .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo finalizar la escritura del archivo."))?;
-            output.sync_all().await
-                .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo sincronizar el archivo con el disco."))?;
-            drop(output);
-
-            let received_digest = format!("{:x}", stream_hash.finalize());
-            let mut verification_file = tokio::fs::File::open(&temp_path).await
-                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo verificar el archivo guardado."))?;
-            let mut verification_hash = Sha256::new();
-            let mut verified_size = 0u64;
-            let mut buffer = vec![0u8; 128 * 1024];
-            loop {
-                let count = verification_file.read(&mut buffer).await
-                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Falló la lectura de verificación del archivo."))?;
-                if count == 0 {
-                    break;
-                }
-                verified_size += count as u64;
-                verification_hash.update(&buffer[..count]);
-            }
-            let verified_digest = format!("{:x}", verification_hash.finalize());
-            if verified_size != file_size || verified_digest != received_digest {
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, "La verificación de integridad del archivo ha fallado."));
-            }
-
-            Ok(UploadReceipt {
-                filename: file_name.clone(),
-                size_bytes: file_size,
-                sha256: verified_digest,
-            })
-        }.await;
-
-        let receipt = match received {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err(error);
-            }
-        };
-        // This endpoint accepts exactly one file per request. The mobile client
-        // batches multiple user selections as independent requests, allowing precise
-        // per-file receipts and preventing a late malformed field from partially
-        // succeeding under a single HTTP request.
-        let next_field = tokio::select! {
-            _ = state.server_shutdown.cancelled() => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
-            }
-            _ = session.cancellation.cancelled() => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
-            }
-            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."));
-            }
-            result = multipart.next_field() => result,
-        };
-        match next_field {
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::BAD_REQUEST, "Envía un archivo por petición; el cliente puede hacer varias peticiones seguidas."));
-            }
-            Err(_) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::BAD_REQUEST, "La petición multipart contiene datos adicionales no válidos."));
-            }
-        }
-
-        if !session_is_authorized(&state, &session).await {
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado o la sesión ha caducado."));
-        }
-
-        match publish_temp_for_session(&state, &session, &temp_path, &filepath).await {
-            Ok(()) => receipts.push(receipt),
-            Err(PublishError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::CONFLICT, "Ya existe un archivo con ese nombre. Cambia el nombre y vuelve a intentarlo."));
-            }
-            Err(PublishError::Unauthorized) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado o la sesión ha caducado."));
-            }
-            Err(PublishError::ShuttingDown) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
-            }
-            Err(PublishError::Io(_)) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, "El sistema de archivos no permite publicar el archivo de forma atómica."));
-            }
-        }
-    }
-
-    if received_fields == 0 {
-        return Err((StatusCode::BAD_REQUEST, "No se ha recibido ningún archivo."));
-    }
-    Ok(Json(UploadResponse { files: receipts }))
-}
-
 async fn reserve_upload_space(
     state: &AppState,
     directory: &Path,
@@ -1934,7 +1722,6 @@ fn start_local_server(state: AppState) {
                 .route("/sha256.js", get(serve_sha256_js))
                 .route("/auth", post(handle_auth).layer(DefaultBodyLimit::max(MAX_AUTH_REQUEST_BYTES)))
                 .route("/session", get(check_session))
-                .route("/upload", post(handle_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_REQUEST_BYTES)))
                 .route("/upload/start", post(start_chunked_upload).layer(DefaultBodyLimit::max(MAX_AUTH_REQUEST_BYTES)))
                 .route("/upload/status/:transfer_id", get(chunked_upload_status))
                 .route("/upload/chunk/:transfer_id/:chunk_index", post(upload_chunk).layer(DefaultBodyLimit::max(UPLOAD_CHUNK_BYTES)))
