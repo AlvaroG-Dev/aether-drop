@@ -1794,7 +1794,7 @@ async fn finish_chunked_upload(
             || disk_digest != stream_digest
             || disk_digest != expected_client_hash
         {
-            return Err((StatusCode::INTEGRITY_CHECK_FAILED, "El hash del archivo guardado no coincide con el archivo original. No se ha publicado el destino."));
+            return Err((StatusCode::UNPROCESSABLE_ENTITY, "El hash del archivo guardado no coincide con el archivo original. No se ha publicado el destino."));
         }
         if !session_is_authorized(&state, &session).await {
             return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
