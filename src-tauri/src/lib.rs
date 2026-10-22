@@ -262,8 +262,8 @@ async fn get_shared_files_internal(state: &AppState) -> Result<Vec<serde_json::V
 }
 
 // PWA Móvil ultra-premium con subida múltiple, barra de progreso real y alertas de estado
-async fn serve_ui() -> axum::response::Html<&'static str> {
-    axum::response::Html(r###"
+async fn serve_ui() -> axum::response::Response {
+    let html = r###"
         <!DOCTYPE html>
         <html lang="es">
         <head>
@@ -516,6 +516,38 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     return element.innerHTML;
                 }
 
+                function escapeAttribute(value) {
+                    return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                        .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
+                }
+
+                async function downloadFile(fileId, filename) {
+                    try {
+                        const response = await fetch('/download-ticket/' + encodeURIComponent(fileId), {
+                            method: 'POST',
+                            headers: authHeaders(),
+                            cache: 'no-store'
+                        });
+                        if (response.status === 401) { handleAuthorizationRevoked(); return; }
+                        if (!response.ok) {
+                            const message = (await response.text()).trim();
+                            throw new Error(message || ('HTTP ' + response.status));
+                        }
+                        const data = await response.json();
+                        if (!data.ticket) throw new Error('El servidor no devolvió un ticket de descarga.');
+                        const link = document.createElement('a');
+                        link.href = '/download/' + encodeURIComponent(fileId) + '?ticket=' + encodeURIComponent(data.ticket);
+                        link.download = filename || 'download';
+                        link.rel = 'noreferrer';
+                        link.style.display = 'none';
+                        document.body.appendChild(link);
+                        link.click();
+                        link.remove();
+                    } catch (error) {
+                        showToast('No se pudo iniciar la descarga: ' + String(error), false);
+                    }
+                }
+
                 function showToast(message, isSuccess) {
                     const toast = document.getElementById('toast');
                     toast.innerText = message;
@@ -683,9 +715,15 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                         list.innerHTML = files.map(f => `
                             <div class="mobile-file-item">
                                 <span class="mobile-file-name">${escapeHtml(f.name)}</span>
-                                <a href="/download/${f.id}" class="download-link">Descargar</a>
+                                <a href="#" class="download-link" data-file-id="${escapeAttribute(f.id)}" data-file-name="${escapeAttribute(f.name)}">Descargar</a>
                             </div>
                         `).join('');
+                        list.querySelectorAll('.download-link').forEach(link => {
+                            link.addEventListener('click', event => {
+                                event.preventDefault();
+                                downloadFile(link.dataset.fileId, link.dataset.fileName);
+                            });
+                        });
                     } catch(e) {}
                 }
 
@@ -742,7 +780,15 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
             </script>
         </body>
         </html>
-    "###)
+    "###;
+    axum::response::Response::builder()
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+        .header("Referrer-Policy", "no-referrer")
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(axum::body::Body::from(html))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 
