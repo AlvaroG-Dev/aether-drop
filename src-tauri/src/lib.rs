@@ -1188,6 +1188,453 @@ async fn handle_upload(
     Ok(Json(UploadResponse { files: receipts }))
 }
 
+async fn reserve_upload_space(
+    state: &AppState,
+    directory: &Path,
+    expected_size: u64,
+) -> Result<(), (StatusCode, &'static str)> {
+    let path = directory.to_path_buf();
+    let available = tokio::task::spawn_blocking(move || fs2::available_space(path))
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo comprobar el espacio libre."))?
+        .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo consultar el espacio disponible en el disco."))?;
+
+    loop {
+        let reserved = state.reserved_upload_bytes.load(Ordering::Acquire);
+        let required = reserved
+            .checked_add(expected_size)
+            .and_then(|value| value.checked_add(DISK_SPACE_RESERVE_BYTES))
+            .ok_or((StatusCode::INSUFFICIENT_STORAGE, "La reserva de espacio supera los límites permitidos."))?;
+        if available < required {
+            return Err((StatusCode::INSUFFICIENT_STORAGE, "No hay espacio libre suficiente para la transferencia y la reserva de seguridad."));
+        }
+        let new_reserved = reserved
+            .checked_add(expected_size)
+            .ok_or((StatusCode::INSUFFICIENT_STORAGE, "La reserva de espacio supera los límites permitidos."))?;
+        match state.reserved_upload_bytes.compare_exchange_weak(
+            reserved,
+            new_reserved,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Ok(()),
+            Err(_) => continue,
+        }
+    }
+}
+
+fn release_reserved_upload_bytes(state: &AppState, amount: u64) {
+    let _ = state.reserved_upload_bytes.fetch_update(
+        Ordering::AcqRel,
+        Ordering::Acquire,
+        |current| Some(current.saturating_sub(amount)),
+    );
+}
+
+fn chunks_for_size(size_bytes: u64) -> u64 {
+    size_bytes / UPLOAD_CHUNK_U64 + u64::from(size_bytes % UPLOAD_CHUNK_U64 != 0)
+}
+
+async fn remove_pending_upload(state: &AppState, transfer_id: &str) -> bool {
+    let handle = state.pending_uploads.write().await.remove(transfer_id);
+    let Some(handle) = handle else {
+        return false;
+    };
+    handle.cancellation.cancel();
+
+    let (temp_path, reserved_remaining) = {
+        let upload = handle.inner.lock().await;
+        (
+            upload.temp_path.clone(),
+            upload.expected_size.saturating_sub(upload.received_size),
+        )
+    };
+    release_reserved_upload_bytes(state, reserved_remaining);
+
+    if let Err(error) = tokio::fs::remove_file(&temp_path).await {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("AetherDrop: no se pudo limpiar la transferencia temporal {:?}: {}", temp_path, error);
+        }
+    }
+    true
+}
+
+fn upload_progress(upload: &PendingUpload) -> UploadProgressResponse {
+    UploadProgressResponse {
+        filename: upload.filename.clone(),
+        size_bytes: upload.expected_size,
+        received_bytes: upload.received_size,
+        next_chunk: upload.next_chunk,
+        chunks_total: chunks_for_size(upload.expected_size),
+        chunk_size: UPLOAD_CHUNK_BYTES,
+    }
+}
+
+async fn start_chunked_upload(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthorizedSession>,
+    Json(payload): Json<UploadStartRequest>,
+) -> Result<Json<UploadStartResponse>, (StatusCode, &'static str)> {
+    if !session_is_authorized(&state, &session).await {
+        return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
+    }
+    let Some(filename) = sanitize_upload_filename(&payload.filename) else {
+        return Err((StatusCode::BAD_REQUEST, "El nombre del archivo no es válido."));
+    };
+    if payload.size_bytes > MAX_UPLOAD_FILE_BYTES {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "El archivo supera el límite permitido."));
+    }
+
+    let slot = state.pending_upload_slots.clone().try_acquire_owned()
+        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Hay demasiadas transferencias pendientes; termina o cancela una antes de empezar otra."))?;
+    let directory = state.save_dir.read().await.clone();
+    tokio::fs::create_dir_all(&directory).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo preparar la carpeta de destino."))?;
+    reserve_upload_space(&state, &directory, payload.size_bytes).await?;
+
+    let transfer_id = uuid::Uuid::new_v4().to_string();
+    let temp_path = directory.join(format!(".aetherdrop-upload-{}.part", transfer_id));
+    let temp_file = match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .await
+    {
+        Ok(file) => file,
+        Err(_) => {
+            release_reserved_upload_bytes(&state, payload.size_bytes);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "No se pudo crear el archivo temporal."));
+        }
+    };
+    drop(temp_file);
+
+    let cancellation = CancellationToken::new();
+    let handle = PendingUploadHandle {
+        owner_device_id: session.device_id.clone(),
+        session_token: session.token.clone(),
+        session_cancellation: session.cancellation.clone(),
+        session_expires_at: session.expires_at,
+        cancellation: cancellation.clone(),
+        inner: Arc::new(AsyncMutex::new(PendingUpload {
+            filename,
+            temp_path: temp_path.clone(),
+            expected_size: payload.size_bytes,
+            received_size: 0,
+            next_chunk: 0,
+            hasher: Sha256::new(),
+            last_activity: Instant::now(),
+            _slot: slot,
+        })),
+    };
+
+    // Check again while serializing insertion so a just-revoked client cannot
+    // leave an active transfer behind after pairing has been removed.
+    let mut pending = state.pending_uploads.write().await;
+    if !session_is_authorized(&state, &session).await || state.server_shutdown.is_cancelled() {
+        drop(pending);
+        cancellation.cancel();
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        release_reserved_upload_bytes(&state, payload.size_bytes);
+        return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
+    }
+    pending.insert(transfer_id.clone(), handle);
+    Ok(Json(UploadStartResponse {
+        transfer_id,
+        chunk_size: UPLOAD_CHUNK_BYTES,
+        chunks_total: chunks_for_size(payload.size_bytes),
+        next_chunk: 0,
+    }))
+}
+
+async fn chunked_upload_status(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthorizedSession>,
+    Path(transfer_id): Path<String>,
+) -> Result<Json<UploadProgressResponse>, (StatusCode, &'static str)> {
+    let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
+        .ok_or((StatusCode::NOT_FOUND, "La transferencia pendiente no existe o ha caducado."))?;
+    if handle.owner_device_id != session.device_id || handle.session_token != session.token {
+        return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
+    }
+    if handle.cancellation.is_cancelled()
+        || handle.session_cancellation.is_cancelled()
+        || handle.session_expires_at <= Instant::now()
+        || !session_is_authorized(&state, &session).await
+    {
+        drop(handle);
+        remove_pending_upload(&state, &transfer_id).await;
+        return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
+    }
+
+    let progress = {
+        let upload = handle.inner.lock().await;
+        if upload.last_activity.elapsed() >= PENDING_UPLOAD_TTL {
+            None
+        } else {
+            Some(upload_progress(&upload))
+        }
+    };
+    match progress {
+        Some(progress) => Ok(Json(progress)),
+        None => {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+            Err((StatusCode::GONE, "La transferencia ha caducado por inactividad."))
+        }
+    }
+}
+
+async fn upload_chunk(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthorizedSession>,
+    Path((transfer_id, chunk_index)): Path<(String, u64)>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Json<UploadProgressResponse>, (StatusCode, &'static str)> {
+    let _permit = state.upload_slots.clone().try_acquire_owned()
+        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Hay demasiadas operaciones de transferencia simultáneas."))?;
+    let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
+        .ok_or((StatusCode::NOT_FOUND, "La transferencia pendiente no existe o ha caducado."))?;
+    if handle.owner_device_id != session.device_id || handle.session_token != session.token {
+        return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
+    }
+    if !session_is_authorized(&state, &session).await
+        || handle.cancellation.is_cancelled()
+        || handle.session_cancellation.is_cancelled()
+    {
+        drop(handle);
+        remove_pending_upload(&state, &transfer_id).await;
+        return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
+    }
+
+    let mut upload = tokio::select! {
+        biased;
+        _ = state.server_shutdown.cancelled() => {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+        }
+        _ = handle.cancellation.cancelled() => {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+            return Err((StatusCode::UNAUTHORIZED, "La transferencia se ha cancelado."));
+        }
+        _ = session.cancellation.cancelled() => {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+            return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado."));
+        }
+        guard = handle.inner.lock() => guard,
+    };
+    if chunk_index != upload.next_chunk {
+        return Err((StatusCode::CONFLICT, "El índice del bloque no coincide; consulta el estado y continúa desde el siguiente bloque esperado."));
+    }
+    if upload.received_size >= upload.expected_size {
+        return Err((StatusCode::CONFLICT, "La transferencia ya ha recibido todos los bloques; finalízala."));
+    }
+
+    let expected_chunk_len = UPLOAD_CHUNK_U64
+        .min(upload.expected_size.saturating_sub(upload.received_size)) as usize;
+    if body.len() != expected_chunk_len {
+        return Err((StatusCode::BAD_REQUEST, "El tamaño del bloque no coincide con el tamaño esperado."));
+    }
+    let provided_hash = headers.get("x-chunk-sha256")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .ok_or((StatusCode::BAD_REQUEST, "Falta el hash SHA-256 válido del bloque."))?;
+    let actual_hash = format!("{:x}", Sha256::digest(&body));
+    if actual_hash != provided_hash {
+        return Err((StatusCode::BAD_REQUEST, "El bloque no supera la verificación SHA-256; vuelve a enviarlo."));
+    }
+
+    let offset = upload.received_size;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&upload.temp_path)
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo abrir el archivo temporal."))?;
+    file.seek(std::io::SeekFrom::Start(offset)).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo posicionar el archivo temporal."))?;
+
+    let write_result: Result<(), (StatusCode, &'static str)> = tokio::select! {
+        biased;
+        _ = state.server_shutdown.cancelled() => Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando.")),
+        _ = handle.cancellation.cancelled() => Err((StatusCode::UNAUTHORIZED, "La transferencia se ha cancelado.")),
+        _ = session.cancellation.cancelled() => Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado.")),
+        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
+            Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."))
+        }
+        result = async {
+            file.write_all(&body).await?;
+            file.sync_data().await
+        } => result.map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo escribir el bloque; comprueba el espacio disponible.")),
+    };
+    if let Err(error) = write_result {
+        if let Err(rollback_error) = file.set_len(offset).await {
+            eprintln!("AetherDrop: no se pudo revertir el bloque parcial {:?}: {}", upload.temp_path, rollback_error);
+        }
+        let _ = file.sync_data().await;
+        drop(file);
+        drop(upload);
+        if error.0 == StatusCode::UNAUTHORIZED || error.0 == StatusCode::SERVICE_UNAVAILABLE {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+        }
+        return Err(error);
+    }
+    drop(file);
+
+    upload.hasher.update(&body);
+    upload.received_size += body.len() as u64;
+    upload.next_chunk += 1;
+    upload.last_activity = Instant::now();
+    release_reserved_upload_bytes(&state, body.len() as u64);
+    Ok(Json(upload_progress(&upload)))
+}
+
+async fn finish_chunked_upload(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthorizedSession>,
+    Path(transfer_id): Path<String>,
+) -> Result<Json<UploadResponse>, (StatusCode, &'static str)> {
+    let _permit = state.upload_slots.clone().try_acquire_owned()
+        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Hay demasiadas operaciones de transferencia simultáneas."))?;
+    let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
+        .ok_or((StatusCode::NOT_FOUND, "La transferencia pendiente no existe o ha caducado."))?;
+    if handle.owner_device_id != session.device_id || handle.session_token != session.token {
+        return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
+    }
+
+    let mut upload = tokio::select! {
+        biased;
+        _ = state.server_shutdown.cancelled() => {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+        }
+        _ = handle.cancellation.cancelled() => {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+            return Err((StatusCode::UNAUTHORIZED, "La transferencia se ha cancelado."));
+        }
+        _ = session.cancellation.cancelled() => {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+            return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado."));
+        }
+        guard = handle.inner.lock() => guard,
+    };
+    if upload.received_size != upload.expected_size {
+        return Err((StatusCode::CONFLICT, "La transferencia está incompleta; continúa los bloques antes de finalizar."));
+    }
+    if !session_is_authorized(&state, &session).await
+        || upload.last_activity.elapsed() >= PENDING_UPLOAD_TTL
+    {
+        drop(upload);
+        drop(handle);
+        remove_pending_upload(&state, &transfer_id).await;
+        return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o la transferencia ha expirado."));
+    }
+
+    let result: Result<UploadReceipt, (StatusCode, &'static str)> = async {
+        let mut sync_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&upload.temp_path)
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo abrir el archivo para finalizarlo."))?;
+        sync_file.sync_all().await
+            .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo sincronizar el archivo final."))?;
+        drop(sync_file);
+
+        let mut verification_file = tokio::fs::File::open(&upload.temp_path).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "No se pudo verificar el archivo guardado."))?;
+        let stream_digest = format!("{:x}", upload.hasher.clone().finalize());
+        let mut disk_hasher = Sha256::new();
+        let mut verified_size = 0u64;
+        let mut buffer = vec![0u8; 128 * 1024];
+        loop {
+            let count = tokio::select! {
+                biased;
+                _ = state.server_shutdown.cancelled() => {
+                    return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+                }
+                _ = handle.cancellation.cancelled() => {
+                    return Err((StatusCode::UNAUTHORIZED, "La transferencia se ha cancelado."));
+                }
+                _ = session.cancellation.cancelled() => {
+                    return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado."));
+                }
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
+                    return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."));
+                }
+                read = verification_file.read(&mut buffer) => {
+                    read.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Falló la lectura de verificación del archivo."))?
+                }
+            };
+            if count == 0 {
+                break;
+            }
+            verified_size += count as u64;
+            disk_hasher.update(&buffer[..count]);
+        }
+        let disk_digest = format!("{:x}", disk_hasher.finalize());
+        if verified_size != upload.expected_size || disk_digest != stream_digest {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "La verificación de integridad del archivo ha fallado."));
+        }
+        if !session_is_authorized(&state, &session).await {
+            return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
+        }
+
+        match publish_temp_for_session(&state, &session, &upload.temp_path, &state.save_dir.read().await.join(&upload.filename)).await {
+            Ok(()) => Ok(UploadReceipt {
+                filename: upload.filename.clone(),
+                size_bytes: upload.expected_size,
+                sha256: disk_digest,
+            }),
+            Err(PublishError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err((StatusCode::CONFLICT, "Ya existe un archivo con ese nombre. Cambia el nombre y vuelve a intentarlo."))
+            }
+            Err(PublishError::Unauthorized) => Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado o la sesión ha caducado.")),
+            Err(PublishError::ShuttingDown) => Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando.")),
+            Err(PublishError::Io(_)) => Err((StatusCode::INTERNAL_SERVER_ERROR, "El sistema de archivos no permite publicar el archivo de forma atómica.")),
+        }
+    }.await;
+
+    drop(upload);
+    match result {
+        Ok(receipt) => {
+            state.pending_uploads.write().await.remove(&transfer_id);
+            Ok(Json(UploadResponse { files: vec![receipt] }))
+        }
+        Err(error) => {
+            drop(handle);
+            remove_pending_upload(&state, &transfer_id).await;
+            Err(error)
+        }
+    }
+}
+
+async fn cancel_chunked_upload(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthorizedSession>,
+    Path(transfer_id): Path<String>,
+) -> StatusCode {
+    let handle = state.pending_uploads.read().await.get(&transfer_id).cloned();
+    let Some(handle) = handle else {
+        return StatusCode::NOT_FOUND;
+    };
+    if handle.owner_device_id != session.device_id || handle.session_token != session.token {
+        return StatusCode::FORBIDDEN;
+    }
+    drop(handle);
+    if remove_pending_upload(&state, &transfer_id).await {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
 async fn list_pc_files(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
     let files = state.pc_files.read().await;
     let list: Vec<_> = files.iter().map(|(id, path)| {
