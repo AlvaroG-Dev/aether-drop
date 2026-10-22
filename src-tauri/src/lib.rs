@@ -924,7 +924,7 @@ mod upload_filename_tests {
     use std::net::IpAddr;
     use std::path::PathBuf;
     use std::str::FromStr;
-    use std::sync::{atomic::AtomicU64, Arc, Mutex};
+    use std::sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex};
     use std::time::{Duration, Instant};
     use tokio::sync::{RwLock, Semaphore};
     use tokio_util::sync::CancellationToken;
