@@ -1,57 +1,77 @@
 # AetherDrop
 
-**Move files between your devices. Keep the handoff simple.**
+**Transferencia local entre ordenador y móvil, sin nube.**
 
-AetherDrop is an early-stage, Rust + Tauri desktop app for moving files between a computer and a phone on the same local network. The desktop dashboard shows a QR code for the mobile web interface and a visual device-bridge concept.
+AetherDrop es un prototipo de escritorio construido con Rust + Tauri 2 y Axum. El ordenador sirve una aplicación web móvil en la red local y permite compartir archivos desde y hacia el PC.
 
-> **Development status: prototype. Do not treat this version as production-ready for sensitive files.** The local HTTP transport is not encrypted yet, and this branch has not been compiled or penetration-tested in a real environment. Do not advertise end-to-end encryption.
+> **Estado: prototipo de desarrollo. No uses esta versión para información confidencial.** El transporte sigue usando HTTP sin cifrar. Ni el PIN, ni los tokens, ni SHA-256 convierten una conexión HTTP en una conexión cifrada o autenticada frente a un atacante activo de la red. No se debe anunciar como cifrado de extremo a extremo.
 
-## Current prototype
+## Implementado
 
-- Tauri 2 desktop shell with a Rust backend.
-- Axum server for the local-network mobile web interface.
-- QR code and local address for pairing.
-- Six-digit pairing PIN, bearer session tokens, session checks, and a basic failed-attempt cooldown.
-- Trusted-device list and revocation checks for active session tokens.
-- Multiple-file upload UI with progress reporting.
-- Filename validation and no-overwrite file creation on upload.
-- Animated desktop and mobile device-bridge bubbles; mobile packets animate during an actual upload.
-- Reduced-motion support for the bridge animation.
+### Transferencias y almacenamiento
+- Subidas en streaming: los archivos no se cargan completos en la RAM.
+- Cada archivo se escribe en un temporal aleatorio situado en la misma carpeta de destino.
+- Antes de publicarlo, el servidor sincroniza el temporal, calcula SHA-256 sobre el flujo recibido y vuelve a leer el temporal en bloques de 128 KiB. Comprueba que tamaño y hash de los bytes guardados coinciden con los del flujo.
+- Publicación sin sobrescritura mediante un enlace duro atómico. Si el nombre ya existe, la operación devuelve conflicto; no reemplaza el archivo anterior.
+- Un archivo por petición HTTP de subida. Si el usuario elige varios, el cliente los envía secuencialmente y comunica resultados parciales sin presentar como correcto un archivo fallido.
+- Descargas por streaming; el servidor no hace `read()` del archivo entero.
+- Tickets de descarga aleatorios, de un solo uso, vinculados al dispositivo, archivo y sesión, con expiración de 60 segundos.
+- Temporales incompletos se eliminan al producirse un error y los temporales abandonados con más de 24 horas se limpian en el arranque, al cambiar de carpeta y periódicamente.
 
-## Planned product
+### Límites actuales
+- Tamaño máximo del cuerpo de subida: 2 GiB.
+- Máximo por archivo: 2 GiB menos 1 MiB para dejar margen al envoltorio multipart.
+- Máximo de tres subidas simultáneas.
+- El cliente permite elegir hasta 32 archivos en una selección, enviándolos como peticiones independientes.
+- Máximo de 256 archivos en la lista «Archivos para enviar».
+- Portapapeles limitado a 1 MiB de texto.
+- Las peticiones de autenticación tienen limitación de intentos por IP y los bloqueos y sesiones caducadas se limpian periódicamente.
 
-1. **Security and reliability:** encrypted transport, robust authentication, strict upload limits, safe file handling, test coverage, and review of every endpoint.
-2. **Desktop MVP:** polished Windows and Linux packages, clear transfer state, drag-and-drop, cancel/retry, and reliable error reporting.
-3. **Android:** native app experience alongside QR/browser handoff.
-4. **macOS and iOS:** build, test, sign, and distribute when Apple tooling and hardware are available.
-5. **Growth:** public documentation, demo videos, feedback loops, and privacy-respecting metrics.
+Estos valores son límites defensivos del prototipo, no cuotas de almacenamiento ni garantía contra llenar un disco.
 
-## Security notes
+### Sesiones y servidor
+- PIN de seis dígitos, tokens de sesión aleatorios con duración de 12 horas, y cancelación de sesiones al revocar un dispositivo.
+- La revocación cancela transferencias activas; las subidas comprueban cancelación y expiración mientras leen el cuerpo.
+- El límite de intentos de PIN es por IP (10 intentos en la ventana de un minuto, seguido de un bloqueo temporal).
+- Se comprueban los encabezados Host y Origin para reducir accesos por DNS rebinding y peticiones cruzadas desde páginas web.
+- El servidor comunica fallos al abrir el puerto, deja de anunciar mDNS si no puede enlazar el puerto y tiene un cierre ordenado.
+- Los errores del portapapeles del sistema se devuelven explícitamente; la aplicación no responde con éxito si el portapapeles del sistema ha fallado.
+- La interfaz móvil y el escritorio cargan JavaScript externo. Se han añadido políticas CSP y encabezados de seguridad básicos.
 
-- The mobile server currently listens on port 8080 on all network interfaces so devices on the LAN can reach it.
-- The transport uses HTTP. Bearer tokens and uploaded content can therefore be exposed to an attacker able to observe or interfere with the local network. **Pairing tokens do not replace transport encryption.**
-- The PIN attempt cooldown is a basic in-process guard, not a substitute for a reviewed rate-limiting and threat model.
-- The upload handler rejects path-like names and avoids silently overwriting existing files, but the whole upload lifecycle still needs adversarial testing.
-- Do not expose port 8080 to the public Internet or use this prototype for confidential data.
-- Only claim encrypted or end-to-end encrypted transfer after the transport and key-verification design has been implemented and independently tested.
+## Limitaciones de seguridad conocidas
 
-## Development
+- **El transporte sigue usando HTTP en el puerto 8080 y escucha en las interfaces de red locales.** El token Bearer, el PIN y el contenido pueden ser observados o manipulados por un atacante capaz de interceptar la red.
+- El SHA-256 de una subida compara los bytes recibidos con una lectura posterior del archivo temporal. Detecta discrepancias de escritura/almacenamiento, pero no constituye una prueba criptográfica del archivo original en el móvil ni protege el contenido frente a un atacante de red.
+- La comprobación Host/Origin reduce algunas rutas de ataque del navegador, pero no es sustituto de TLS.
+- Los tickets de descarga evitan poner el token Bearer en el enlace; siguen viajando por HTTP y su protección depende de la seguridad de esa conexión.
+- Los bloqueos de sesión son en memoria y desaparecen al reiniciar. No hay persistencia de dispositivos ni recuperación de transferencias interrumpidas.
+- La publicación mediante enlaces duros atómicos requiere que el sistema de archivos de destino soporte hard links. Si no lo soporta, la transferencia falla de forma explícita en vez de degradar a una publicación con riesgo de sobrescritura.
+- El proyecto no ha completado una auditoría de seguridad ni pruebas de transferencia entre dispositivos reales. No expongas el puerto 8080 a Internet ni uses esta versión con archivos sensibles.
 
-Install the prerequisites for [Tauri 2](https://v2.tauri.app/start/prerequisites/), Rust, and Node.js.
+Para un transporte realmente seguro hace falta diseñar una identidad de servidor que el navegador móvil pueda verificar —no basta con añadir un certificado autofirmado— o pasar a un cliente móvil nativo con una estrategia de confianza de claves verificable. Solo entonces debe evaluarse si procede afirmar cifrado de extremo a extremo.
+
+## Desarrollo
+
+Instala las dependencias del sistema para [Tauri 2](https://v2.tauri.app/start/prerequisites/), Rust y Node.js 22.
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-Rust checks:
+Comprobaciones locales equivalentes a CI:
 
 ```bash
-cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo check --manifest-path src-tauri/Cargo.toml
+node --check src/app.js
+node --check src-tauri/src/mobile.js
+cargo fmt --manifest-path src-tauri/Cargo.toml --all
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo check --locked --manifest-path src-tauri/Cargo.toml
+cargo clippy --all-targets --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-## Contributing
+El workflow de GitHub Actions ejecuta estas comprobaciones de JavaScript y Rust en Ubuntu, incluidos tests, compilación y Clippy. Una CI correcta no sustituye las pruebas de interfaz y transferencia en Windows, Linux y teléfonos físicos.
 
-Bug reports and practical feedback are welcome. Please include your operating system, the device pair tested, file size, and steps to reproduce. Never attach private files or secrets to an issue.
+## Contribuir
+
+Al informar de un fallo, incluye sistema operativo, navegador/teléfono, tamaño del archivo y pasos para reproducirlo. No adjuntes archivos privados, PIN, tokens ni datos sensibles.
