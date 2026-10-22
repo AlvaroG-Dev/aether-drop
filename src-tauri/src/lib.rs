@@ -130,6 +130,7 @@ struct UploadProgressResponse {
     next_chunk: u64,
     chunks_total: u64,
     chunk_size: usize,
+    chunk_hashes: Vec<String>,
 }
 
 struct PendingUpload {
@@ -139,6 +140,7 @@ struct PendingUpload {
     received_size: u64,
     next_chunk: u64,
     hasher: Sha256,
+    chunk_hashes: Vec<String>,
     last_activity: Instant,
     _slot: OwnedSemaphorePermit,
 }
@@ -1090,6 +1092,7 @@ fn upload_progress(upload: &PendingUpload) -> UploadProgressResponse {
         next_chunk: upload.next_chunk,
         chunks_total: chunks_for_size(upload.expected_size),
         chunk_size: UPLOAD_CHUNK_BYTES,
+        chunk_hashes: upload.chunk_hashes.clone(),
     }
 }
 
@@ -1145,6 +1148,7 @@ async fn start_chunked_upload(
             received_size: 0,
             next_chunk: 0,
             hasher: Sha256::new(),
+            chunk_hashes: Vec::new(),
             last_activity: Instant::now(),
             _slot: slot,
         })),
@@ -1309,6 +1313,7 @@ async fn upload_chunk(
     drop(file);
 
     upload.hasher.update(&body);
+    upload.chunk_hashes.push(actual_hash);
     upload.received_size += body.len() as u64;
     upload.next_chunk += 1;
     upload.last_activity = Instant::now();
