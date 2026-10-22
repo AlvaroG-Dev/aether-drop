@@ -99,7 +99,7 @@
           webtransportQr.hidden = false;
           webtransportLink.href = info.webtransport_probe_url;
           webtransportLink.style.display = 'inline-block';
-          webtransportStatus.textContent = 'Escanea este segundo QR desde el móvil para verificar el certificado y el canal cifrado. No envía archivos.';
+          webtransportStatus.textContent = 'Escanea este segundo QR desde el móvil. La página de prueba necesita Internet para cargarse; la conexión de prueba va directa al PC y no envía archivos.';
         } else {
           webtransportStatus.textContent = info.webtransport_error
             ? 'Prueba no disponible: ' + info.webtransport_error
