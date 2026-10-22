@@ -29,7 +29,9 @@ use arboard::Clipboard;
 
 const MAX_UPLOAD_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_CONCURRENT_UPLOADS: usize = 3;
+const MAX_CONCURRENT_DOWNLOADS: usize = 3;
 const MAX_PENDING_UPLOADS: usize = 24;
+const MAX_PENDING_UPLOADS_PER_DEVICE: usize = 4;
 const UPLOAD_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const UPLOAD_CHUNK_U64: u64 = UPLOAD_CHUNK_BYTES as u64;
 const PENDING_UPLOAD_TTL: Duration = Duration::from_secs(2 * 60 * 60);
@@ -164,6 +166,7 @@ struct AppState {
     session_tokens: Arc<RwLock<HashMap<String, SessionRecord>>>,
     auth_failures: Arc<RwLock<HashMap<IpAddr, AuthFailureState>>>,
     upload_slots: Arc<Semaphore>,
+    download_slots: Arc<Semaphore>,
     pending_upload_slots: Arc<Semaphore>,
     pending_uploads: Arc<RwLock<HashMap<String, PendingUploadHandle>>>,
     reserved_upload_bytes: Arc<AtomicU64>,
@@ -863,6 +866,7 @@ mod upload_filename_tests {
             )]))),
             auth_failures: Arc::new(RwLock::new(HashMap::new())),
             upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            download_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
             pending_upload_slots: Arc::new(Semaphore::new(MAX_PENDING_UPLOADS)),
             pending_uploads: Arc::new(RwLock::new(HashMap::new())),
             reserved_upload_bytes: Arc::new(AtomicU64::new(0)),
@@ -1365,6 +1369,16 @@ async fn start_chunked_upload(
     // Check again while serializing insertion so a just-revoked client cannot
     // leave an active transfer behind after pairing has been removed.
     let mut pending = state.pending_uploads.write().await;
+    let pending_for_device = pending.values()
+        .filter(|upload| upload.owner_device_id == session.device_id)
+        .count();
+    if pending_for_device >= MAX_PENDING_UPLOADS_PER_DEVICE {
+        drop(pending);
+        cancellation.cancel();
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        release_reserved_upload_bytes(&state, payload.size_bytes);
+        return Err((StatusCode::TOO_MANY_REQUESTS, "Este dispositivo ya tiene demasiadas transferencias pendientes. Finaliza o cancela una antes de iniciar otra."));
+    }
     if !session_is_authorized(&state, &session).await || state.server_shutdown.is_cancelled() {
         drop(pending);
         cancellation.cancel();
@@ -1694,6 +1708,11 @@ async fn download_pc_file(
     Extension(session): Extension<AuthorizedSession>,
     AxumPath(id): AxumPath<String>,
 ) -> axum::response::Response {
+    let download_permit = match state.download_slots.clone().try_acquire_owned() {
+        Ok(permit) => Arc::new(permit),
+        Err(_) => return StatusCode::TOO_MANY_REQUESTS.into_response(),
+    };
+
     // Release the shared file-list lock before opening/streaming the file.
     let path = {
         let files = state.pc_files.read().await;
@@ -1731,13 +1750,17 @@ async fn download_pc_file(
     let disposition = content_disposition_value(&filename);
     let stream_state = state.clone();
     let stream_session = session.clone();
-    let stream = ReaderStream::new(file).and_then(move |chunk| {
+    let stream = ReaderStream::with_capacity(file, 256 * 1024).and_then(move |chunk| {
         let state = stream_state.clone();
         let session = stream_session.clone();
+        let _permit = download_permit.clone();
         async move {
+            // The Arc held by this stream retains its semaphore permit until the
+            // response body is dropped, even if the client stops reading early.
             if !session_is_authorized(&state, &session).await {
                 return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Session revoked"));
             }
+            let _permit = _permit;
             Ok::<Bytes, std::io::Error>(chunk)
         }
     });
@@ -2024,6 +2047,7 @@ pub fn run() {
         session_tokens: Arc::new(RwLock::new(HashMap::new())),
         auth_failures: Arc::new(RwLock::new(HashMap::new())),
         upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+        download_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
         pending_upload_slots: Arc::new(Semaphore::new(MAX_PENDING_UPLOADS)),
         pending_uploads: Arc::new(RwLock::new(HashMap::new())),
         reserved_upload_bytes: Arc::new(AtomicU64::new(0)),
