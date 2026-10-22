@@ -5,7 +5,7 @@
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{oneshot, Mutex}, time::timeout};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{oneshot, Mutex, Semaphore}, time::timeout};
 use tokio_util::sync::CancellationToken;
 use wtransport::{tls::Sha256DigestFmt, Endpoint, Identity, ServerConfig};
 
@@ -78,12 +78,14 @@ pub async fn run(
     }
 
     let auth_failures: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>> = Arc::new(Mutex::new(HashMap::new()));
+    let handshake_slots = Arc::new(Semaphore::new(16));
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
             incoming = endpoint.accept() => {
                 let expected_pin = pin.clone();
                 let auth_failures = auth_failures.clone();
+                let handshake_slots = handshake_slots.clone();
                 tokio::spawn(async move {
                     let request = match timeout(Duration::from_secs(5), incoming).await {
                         Ok(Ok(request)) => request,
@@ -95,6 +97,13 @@ pub async fn run(
                         let _ = request.forbidden().await;
                         return;
                     }
+                    let permit = match handshake_slots.try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            let _ = request.too_many_requests().await;
+                            return;
+                        }
+                    };
                     let remote_ip = request.remote_address().ip();
                     let blocked = {
                         let now = Instant::now();
@@ -117,21 +126,28 @@ pub async fn run(
                         Ok(Ok(streams)) => streams,
                         _ => return,
                     };
-                    let mut request_bytes = Vec::with_capacity(128);
-                    let mut byte = [0u8; 1];
-                    while request_bytes.len() < MAX_HELLO_BYTES {
-                        match timeout(Duration::from_secs(5), receive.read(&mut byte)).await {
-                            Ok(Ok(0)) | Err(_) | Ok(Err(_)) => return,
-                            Ok(Ok(_)) => {
-                                if byte[0] == b'\n' { break; }
-                                request_bytes.push(byte[0]);
-                            }
+                    let read_result = timeout(Duration::from_secs(5), async {
+                        let mut bytes = Vec::with_capacity(128);
+                        let mut byte = [0u8; 1];
+                        loop {
+                            let count = match receive.read(&mut byte).await {
+                                Ok(count) => count,
+                                Err(_) => return None,
+                            };
+                            if count == 0 { return None; }
+                            if byte[0] == b'\n' { return Some(bytes); }
+                            if bytes.len() >= MAX_HELLO_BYTES { return Some(bytes); }
+                            bytes.push(byte[0]);
                         }
-                    }
-                    if request_bytes.len() >= MAX_HELLO_BYTES {
-                        let _ = send.write_all(b"{\"ok\":false,\"error\":\"request_too_large\"}\n").await;
-                        return;
-                    }
+                    }).await;
+                    let request_bytes = match read_result {
+                        Ok(Some(bytes)) if bytes.len() < MAX_HELLO_BYTES => bytes,
+                        _ => {
+                            let _ = send.write_all(b"{\"ok\":false,\"error\":\"request_too_large_or_timeout\"}\n").await;
+                            return;
+                        }
+                    };
+                    let _permit = permit;
                     let valid = serde_json::from_slice::<PairRequest>(&request_bytes)
                         .map(|request| request.kind == "pair" && constant_time_eq(request.pin.as_bytes(), expected_pin.as_bytes()))
                         .unwrap_or(false);
