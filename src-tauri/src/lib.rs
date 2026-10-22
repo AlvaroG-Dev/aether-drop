@@ -2033,9 +2033,9 @@ fn start_local_server(state: AppState) {
             Err(error) => {
                 let message = format!("No se pudo crear el runtime HTTP: {}", error);
                 eprintln!("AetherDrop: {}", message);
-                if let Ok(mut status) = state.server_status.try_write() {
-                    *status = ServerStatus::Failed(message);
-                }
+                // This runs on the dedicated OS thread before a Tokio runtime exists,
+                // so a blocking lock guarantees the desktop UI will observe the failure.
+                *state.server_status.blocking_write() = ServerStatus::Failed(message);
                 return;
             }
         };
