@@ -266,6 +266,10 @@ async fn set_save_directory(path: String, state: tauri::State<'_, AppState>) -> 
     drop(probe);
     tokio::fs::remove_file(&probe_path).await
         .map_err(|error| format!("No se pudo limpiar la prueba de escritura: {}", error))?;
+    let previous_directory = state.save_dir.read().await.clone();
+    if previous_directory != canonical {
+        cleanup_stale_uploads(&previous_directory).await;
+    }
     cleanup_stale_uploads(&canonical).await;
     let display_path = canonical.to_string_lossy().to_string();
     *state.save_dir.write().await = canonical;
