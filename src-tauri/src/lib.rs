@@ -47,6 +47,8 @@ const MAX_AUTH_FAILURES: u32 = 10;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const AUTH_BLOCK_DURATION: Duration = Duration::from_secs(60);
 const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+const COMPLETED_UPLOAD_TTL: Duration = Duration::from_secs(10 * 60);
+const MAX_COMPLETED_UPLOAD_RECEIPTS: usize = 256;
 
 #[derive(Clone)]
 struct SessionRecord {
@@ -82,7 +84,7 @@ enum PublishError {
     Io(std::io::Error),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct UploadReceipt {
     filename: String,
     size_bytes: u64,
@@ -98,6 +100,14 @@ struct UploadResponse {
 #[serde(deny_unknown_fields)]
 struct UploadFinishRequest {
     sha256: String,
+}
+
+#[derive(Clone)]
+struct CompletedUpload {
+    owner_device_id: String,
+    session_token: String,
+    receipt: UploadReceipt,
+    expires_at: Instant,
 }
 
 #[derive(Clone)]
@@ -182,6 +192,7 @@ struct AppState {
     download_slots: Arc<Semaphore>,
     pending_upload_slots: Arc<Semaphore>,
     pending_uploads: Arc<RwLock<HashMap<String, PendingUploadHandle>>>,
+    completed_uploads: Arc<RwLock<HashMap<String, CompletedUpload>>>,
     reserved_upload_bytes: Arc<AtomicU64>,
     download_tickets: Arc<RwLock<HashMap<String, DownloadTicket>>>,
     server_status: Arc<RwLock<ServerStatus>>,
@@ -984,6 +995,7 @@ mod upload_filename_tests {
             download_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
             pending_upload_slots: Arc::new(Semaphore::new(MAX_PENDING_UPLOADS)),
             pending_uploads: Arc::new(RwLock::new(HashMap::new())),
+        completed_uploads: Arc::new(RwLock::new(HashMap::new())),
             reserved_upload_bytes: Arc::new(AtomicU64::new(0)),
             download_tickets: Arc::new(RwLock::new(HashMap::<String, DownloadTicket>::new())),
             server_status: Arc::new(RwLock::new(ServerStatus::Ready)),
@@ -1753,8 +1765,19 @@ async fn chunked_upload_status(
     Extension(session): Extension<AuthorizedSession>,
     AxumPath(transfer_id): AxumPath<String>,
 ) -> Result<Json<UploadProgressResponse>, (StatusCode, &'static str)> {
-    let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
-        .ok_or((StatusCode::NOT_FOUND, "La transferencia pendiente no existe o ha caducado."))?;
+    let handle = state.pending_uploads.read().await.get(&transfer_id).cloned();
+    let Some(handle) = handle else {
+        // A lost HTTP response must not make a successfully published upload look failed.
+        let mut completed = state.completed_uploads.write().await;
+        completed.retain(|_, record| record.expires_at > Instant::now());
+        if let Some(record) = completed.get(&transfer_id) {
+            if record.owner_device_id == session.device_id && record.session_token == session.token {
+                return Ok(Json(UploadResponse { files: vec![record.receipt.clone()] }));
+            }
+            return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
+        }
+        return Err((StatusCode::NOT_FOUND, "La transferencia pendiente no existe o ha caducado."));
+    };
     if handle.owner_device_id != session.device_id || handle.session_token != session.token {
         return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
     }
@@ -2040,6 +2063,19 @@ async fn finish_chunked_upload(
     match result {
         Ok(receipt) => {
             state.pending_uploads.write().await.remove(&transfer_id);
+            let mut completed = state.completed_uploads.write().await;
+            completed.retain(|_, record| record.expires_at > Instant::now());
+            if completed.len() >= MAX_COMPLETED_UPLOAD_RECEIPTS {
+                if let Some(oldest_id) = completed.iter().min_by_key(|(_, record)| record.expires_at).map(|(id, _)| id.clone()) {
+                    completed.remove(&oldest_id);
+                }
+            }
+            completed.insert(transfer_id, CompletedUpload {
+                owner_device_id: session.device_id.clone(),
+                session_token: session.token.clone(),
+                receipt: receipt.clone(),
+                expires_at: Instant::now() + COMPLETED_UPLOAD_TTL,
+            });
             Ok(Json(UploadResponse { files: vec![receipt] }))
         }
         Err(error) => {
@@ -2331,6 +2367,10 @@ fn start_local_server(state: AppState) {
                                 tickets.retain(|_, ticket| ticket.expires_at > now);
                             }
                             {
+                                let mut completed = maintenance_state.completed_uploads.write().await;
+                                completed.retain(|_, receipt| receipt.expires_at > now);
+                            }
+                            {
                                 let mut failures = maintenance_state.auth_failures.write().await;
                                 failures.retain(|_, entry| {
                                     entry.window_started.elapsed() < AUTH_FAILURE_WINDOW
@@ -2427,6 +2467,7 @@ pub fn run() {
         download_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
         pending_upload_slots: Arc::new(Semaphore::new(MAX_PENDING_UPLOADS)),
         pending_uploads: Arc::new(RwLock::new(HashMap::new())),
+        completed_uploads: Arc::new(RwLock::new(HashMap::new())),
         reserved_upload_bytes: Arc::new(AtomicU64::new(0)),
         download_tickets: Arc::new(RwLock::new(HashMap::new())),
         server_status: Arc::new(RwLock::new(ServerStatus::Starting)),
