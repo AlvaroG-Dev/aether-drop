@@ -1,8 +1,22 @@
                 let activeUploadXhr = { current: null };
                 let revocationHandled = false;
+                function createDeviceId() {
+                    try {
+                        const bytes = new Uint8Array(16);
+                        window.crypto.getRandomValues(bytes);
+                        return 'dev_' + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+                    } catch (_) {
+                        // Compatibility fallback; the device ID identifies a client but
+                        // is not an authentication secret. Server-issued tokens are random.
+                        return 'dev_' + Date.now().toString(36) + '_' +
+                            Math.random().toString(36).substring(2) +
+                            Math.random().toString(36).substring(2);
+                    }
+                }
+
                 let deviceId = localStorage.getItem('aether_device_id');
-                if (!deviceId) {
-                    deviceId = 'dev_' + Math.random().toString(36).substring(2, 10);
+                if (!deviceId || !/^dev_[a-zA-Z0-9_-]{1,60}$/.test(deviceId)) {
+                    deviceId = createDeviceId();
                     localStorage.setItem('aether_device_id', deviceId);
                 }
 
@@ -83,7 +97,15 @@
                             setBridgeState('paired', 'Móvil vinculado · listo para transferir');
                             startSync();
                         } else {
-                            pinError.innerText = "PIN incorrecto.";
+                            if (res.status === 429) {
+                                const detail = (await res.text()).trim();
+                                pinError.innerText = detail || 'Demasiados intentos de PIN. Espera un minuto antes de volver a intentarlo.';
+                            } else if (res.status === 401) {
+                                pinError.innerText = 'PIN incorrecto.';
+                            } else {
+                                const detail = (await res.text()).trim();
+                                pinError.innerText = detail || ('No se pudo vincular el dispositivo (HTTP ' + res.status + ').');
+                            }
                             pinError.classList.remove('hidden');
                         }
                     } catch (e) {
@@ -247,7 +269,7 @@
                         const xhr = new XMLHttpRequest();
                         activeUploadXhr.current = xhr;
                         xhr.open('POST', '/upload/chunk/' + encodeURIComponent(transferId) + '/' + chunkIndex, true);
-                        xhr.timeout = 120000;
+                        xhr.timeout = 300000;
                         const token = localStorage.getItem('aether_token');
                         if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
                         xhr.setRequestHeader('Content-Type', 'application/octet-stream');
