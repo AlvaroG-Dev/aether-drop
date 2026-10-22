@@ -758,7 +758,10 @@ async fn create_download_ticket(
 }
 
 async fn session_is_authorized(state: &AppState, session: &AuthorizedSession) -> bool {
-    if session.cancellation.is_cancelled() || session.expires_at <= Instant::now() {
+    if state.server_shutdown.is_cancelled()
+        || session.cancellation.is_cancelled()
+        || session.expires_at <= Instant::now()
+    {
         return false;
     }
     let now = Instant::now();
@@ -785,6 +788,9 @@ async fn handle_upload(
 
     loop {
         let next_field = tokio::select! {
+            _ = state.server_shutdown.cancelled() => {
+                return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+            }
             _ = session.cancellation.cancelled() => {
                 return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
             }
@@ -830,6 +836,9 @@ async fn handle_upload(
             let mut file_size = 0u64;
             loop {
                 let next_chunk = tokio::select! {
+                    _ = state.server_shutdown.cancelled() => {
+                        return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+                    }
                     _ = session.cancellation.cancelled() => {
                         return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
                     }
