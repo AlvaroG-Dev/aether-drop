@@ -8,7 +8,8 @@
   <style>
     :root{color-scheme:light;--bg:#f6f7fb;--surface:#fff;--ink:#182033;--muted:#778096;--line:#e8ebf2;--accent:#5b61e8;--accent-dark:#474dcc;--accent-soft:#f0f0ff;--green:#17876b;--green-soft:#eaf8f2;--shadow:0 12px 34px rgba(25,35,66,.055);--radius:20px}
     *{box-sizing:border-box}
-    body{margin:0;min-height:100vh;overflow-x:hidden;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.01em}
+    html,body{height:100%;overflow:hidden}
+    body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.01em}
     button{font:inherit;cursor:pointer}
     button:focus-visible{outline:3px solid #a5a7ff;outline-offset:3px}
     .app{width:100%;max-width:1060px;margin:0 auto;padding:24px 24px 18px;overflow:hidden}
@@ -72,7 +73,8 @@
     .primary-btn svg{width:14px;height:14px}
     .subtle-btn{border:1px solid var(--line);background:#fff;color:#5e677a;border-radius:9px;padding:7px 10px;font-size:11px;font-weight:650;transition:background .18s}
     .subtle-btn:hover{background:#f7f8fc}
-    .item-list{display:flex;flex-direction:column;gap:7px;max-height:150px;overflow:auto;padding-right:2px}
+    .item-list{display:flex;flex-direction:column;gap:7px;max-height:150px;overflow:auto;padding-right:2px;scrollbar-width:none;-ms-overflow-style:none}
+    .item-list::-webkit-scrollbar{display:none;width:0;height:0}
     .empty-state{display:grid;place-items:center;text-align:center;min-height:94px;color:#9aa1b0;font-size:11px;gap:6px}
     .empty-state svg{width:23px;height:23px;stroke:#b9bfcc}
     .file-item,.device-item{display:flex;align-items:center;gap:10px;min-width:0;padding:9px 10px;background:#fafbfe;border:1px solid #eff1f6;border-radius:11px}
@@ -89,7 +91,7 @@
     .folder-path{font-size:11px;color:#4f586c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .footer{display:flex;justify-content:space-between;gap:12px;color:#a0a6b5;font-size:10px;padding:12px 3px 0}
     .app-alert{display:none;margin:0 0 12px;padding:10px 12px;border-radius:10px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.app-alert.show{display:block}.app-alert.error{background:#fff2f4;border:1px solid #f5dfe4;color:#a8324a}.app-alert.success{background:#eef9f4;border:1px solid #d9f0e7;color:#167354}
-    .titlebar{height:38px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#f6f7fb;border-bottom:1px solid #e7eaf1;user-select:none}.titlebar-brand{font-size:11px;font-weight:750;color:#626b80;letter-spacing:.01em}.titlebar-controls{display:flex;gap:7px}.titlebar-btn{width:27px;height:24px;border:0;border-radius:7px;background:transparent;color:#667086;display:grid;place-items:center;font-size:13px}.titlebar-btn:hover{background:#e9ebf3}.titlebar-btn.close:hover{background:#e5484d;color:white}
+    .titlebar{display:none;height:40px;align-items:center;justify-content:space-between;padding:0 9px 0 15px;background:#fff;border-bottom:1px solid #e8ebf2;user-select:none;flex-shrink:0}.custom-chrome .titlebar{display:flex}.titlebar-brand{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:780;color:#667087;letter-spacing:.01em;height:100%;flex:1;min-width:0;cursor:default}.titlebar-brand-mark{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;background:#5b61e8;color:#fff;font-weight:800;font-size:11px}.titlebar-controls{display:flex;align-items:center;gap:4px;height:100%;margin-left:12px}.titlebar-btn{width:38px;height:29px;border:0;border-radius:8px;background:transparent;color:#616b80;display:grid;place-items:center;transition:background .14s,color .14s,transform .14s;padding:0}.titlebar-btn svg{width:12px;height:12px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}.titlebar-btn:hover{background:#eef0f7;color:#282f42}.titlebar-btn:active{transform:scale(.94)}.titlebar-btn.close{margin-left:2px}.titlebar-btn.close:hover{background:#e5484d;color:#fff}.custom-chrome .app{padding-top:17px}.compact-layout .app{padding:11px 18px 8px}.compact-layout .topbar{margin-bottom:13px}.compact-layout .intro{margin-bottom:11px}.compact-layout h1{font-size:24px}.compact-layout .connect-panel,.compact-layout .bridge-panel{padding:14px}.compact-layout .bridge-scene{min-height:126px;margin:0 0 9px}.compact-layout .section-grid{gap:10px;margin-top:10px}.compact-layout .list-panel{padding:12px 14px;min-height:125px}.compact-layout .list-heading{margin-bottom:8px}.compact-layout .item-list{max-height:88px}.compact-layout .folder-bar{margin-top:10px;padding:9px 12px}.compact-layout .footer{padding-top:6px}
     .footer span{display:flex;align-items:center;gap:6px}
     .footer svg{width:12px;height:12px}
     @keyframes packet{0%{transform:translateX(0) scale(.7);opacity:0}14%{opacity:1}85%{opacity:1}100%{transform:translateX(152px) scale(1.1);opacity:0}}
@@ -101,7 +103,7 @@
   </style>
 </head>
 <body>
-  <div class="titlebar"><div class="titlebar-brand" data-tauri-drag-region>AetherDrop</div><div class="titlebar-controls"><button class="titlebar-btn" onclick="window.minimizeApp()" aria-label="Minimizar">−</button><button class="titlebar-btn" onclick="window.toggleMaximizeApp()" aria-label="Maximizar">□</button><button class="titlebar-btn close" onclick="window.closeApp()" aria-label="Cerrar">×</button></div></div>
+  <div class="titlebar" id="customTitlebar"><div class="titlebar-brand" id="titlebarDragRegion" data-tauri-drag-region><span class="titlebar-brand-mark" aria-hidden="true">A</span><span>AetherDrop</span></div><div class="titlebar-controls"><button class="titlebar-btn" id="windowMinimize" aria-label="Minimizar" title="Minimizar"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 9h8"/></svg></button><button class="titlebar-btn" id="windowMaximize" aria-label="Maximizar" title="Maximizar"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx=".6"/></svg></button><button class="titlebar-btn close" id="windowClose" aria-label="Cerrar" title="Cerrar"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button></div></div>
   <main class="app">
     <div id="appAlert" class="app-alert" role="status" aria-live="polite"></div>
     <header class="topbar">
@@ -176,11 +178,86 @@
   <script type="module">
     const { invoke } = window.__TAURI__.core;
     const { open } = window.__TAURI__.dialog;
-    const currentWindow = window.__TAURI__.window?.getCurrentWindow?.();
-    window.minimizeApp = () => currentWindow?.minimize();
-    window.toggleMaximizeApp = async () => { if (currentWindow) { if (await currentWindow.isMaximized()) await currentWindow.unmaximize(); else await currentWindow.maximize(); } };
-    window.closeApp = () => currentWindow?.close();
-    function showAppAlert(message, success=false) { const el=document.getElementById("appAlert"); el.textContent=message; el.className="app-alert show "+(success?"success":"error"); }
+    const tauriWindowApi = window.__TAURI__?.window;
+    const currentWindow = tauriWindowApi?.getCurrentWindow?.();
+    const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent + " " + navigator.platform);
+    if (!isMacOS) document.body.classList.add("custom-chrome");
+    function showAppAlert(message, success=false) { const el=document.getElementById("appAlert"); if(!el)return; el.textContent=message; el.className="app-alert show "+(success?"success":"error"); }
+    async function runWindowAction(action) {
+      try {
+        if (!currentWindow) throw new Error("La API de ventana de Tauri no está disponible.");
+        await action();
+      } catch (e) {
+        showAppAlert("No se pudo controlar la ventana: " + String(e));
+      }
+    }
+    window.minimizeApp = () => runWindowAction(() => currentWindow.minimize());
+    window.toggleMaximizeApp = () => runWindowAction(() => currentWindow.toggleMaximize());
+    window.closeApp = () => runWindowAction(() => currentWindow.close());
+    async function updateMaximizeControl() {
+      if (!currentWindow || isMacOS) return;
+      try {
+        const maximized = await currentWindow.isMaximized();
+        const button = document.getElementById("windowMaximize");
+        if (!button) return;
+        button.title = maximized ? "Restaurar" : "Maximizar";
+        button.setAttribute("aria-label", button.title);
+        button.innerHTML = maximized
+          ? '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="3.5" y="1.5" width="7" height="7" rx=".6"/><path d="M2 4.5v6h6"/></svg>'
+          : '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx=".6"/></svg>';
+      } catch (e) { /* La acción mostrará el error si el permiso no está disponible. */ }
+    }
+    if (!isMacOS) {
+      document.getElementById("windowMinimize").addEventListener("click", window.minimizeApp);
+      document.getElementById("windowMaximize").addEventListener("click", window.toggleMaximizeApp);
+      document.getElementById("windowClose").addEventListener("click", window.closeApp);
+      document.getElementById("customTitlebar").addEventListener("pointerdown", event => {
+        if (event.button !== 0 || event.target.closest("button")) return;
+        runWindowAction(() => currentWindow.startDragging());
+      });
+      document.getElementById("customTitlebar").addEventListener("dblclick", event => {
+        if (!event.target.closest("button")) window.toggleMaximizeApp();
+      });
+      currentWindow?.onResized?.(() => { updateMaximizeControl(); });
+      updateMaximizeControl();
+    }
+    let fitScheduled = false;
+    let fitRunning = false;
+    function scheduleWindowFit() {
+      if (fitScheduled) return;
+      fitScheduled = true;
+      requestAnimationFrame(() => {
+        fitScheduled = false;
+        fitWindowToContent().catch(e => console.warn("No se pudo adaptar el tamaño de ventana:", e));
+      });
+    }
+    async function fitWindowToContent() {
+      if (!currentWindow || fitRunning) return;
+      fitRunning = true;
+      try {
+        const app = document.querySelector(".app");
+        if (!app) return;
+        const scale = await currentWindow.scaleFactor();
+        const monitor = await currentWindow.currentMonitor();
+        const screenHeight = monitor ? monitor.size.height / scale : window.screen.availHeight;
+        const maxHeight = Math.max(680, Math.floor(Math.min(screenHeight, window.screen.availHeight) - 36));
+        let desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
+        document.body.classList.toggle("compact-layout", desired > maxHeight);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
+        const targetHeight = Math.max(680, Math.min(Math.ceil(desired), maxHeight));
+        const inner = await currentWindow.innerSize();
+        const targetWidth = Math.max(720, Math.min(Math.ceil(inner.width / scale), Math.floor(window.screen.availWidth - 24)));
+        const LogicalSize = window.__TAURI__?.dpi?.LogicalSize;
+        if (!LogicalSize) throw new Error("No está disponible LogicalSize en Tauri.");
+        if (Math.abs(inner.height / scale - targetHeight) > 18 || Math.abs(inner.width / scale - targetWidth) > 18) {
+          await currentWindow.setSize(new LogicalSize(targetWidth, targetHeight));
+        }
+      } finally { fitRunning = false; }
+    }
+    const appResizeObserver = new ResizeObserver(scheduleWindowFit);
+    appResizeObserver.observe(document.querySelector(".app"));
+    window.addEventListener("load", () => { scheduleWindowFit(); setTimeout(scheduleWindowFit, 220); });
 
     async function initApp() {
       try {
@@ -196,7 +273,8 @@
         document.getElementById('serverUrl').innerText = 'No se pudo detectar la red';
         document.getElementById('qrPlaceholder').textContent = 'Red no disponible';
       }
-      loadData();
+      await loadData();
+      scheduleWindowFit();
     }
 
     window.changeDirectory = async () => {
@@ -212,12 +290,12 @@
     window.shareFile = async () => {
       try {
         const selected = await open({ multiple: false });
-        if (selected) renderSharedFiles(await invoke('share_pc_file', { path: selected }));
+        if (selected) { renderSharedFiles(await invoke('share_pc_file', { path: selected })); scheduleWindowFit(); }
       } catch (e) { showAppAlert('No se pudo añadir el archivo: ' + String(e)); }
     };
 
     window.removeFile = async (id) => {
-      try { renderSharedFiles(await invoke('remove_pc_file', { id })); showAppAlert('Archivo quitado de la lista de compartidos.', true); }
+      try { renderSharedFiles(await invoke('remove_pc_file', { id })); showAppAlert('Archivo quitado de la lista de compartidos.', true); scheduleWindowFit(); }
       catch (e) { showAppAlert('No se pudo quitar el archivo: ' + String(e)); }
     };
 
@@ -286,8 +364,8 @@
     }
 
     initApp();
-    // Keep the connection status fresh when a phone pairs after startup.
-    setInterval(async () => { try { renderDevices(await invoke('get_trusted_devices')); } catch (e) { showAppAlert('No se pudo actualizar el estado de los dispositivos: ' + String(e)); } }, 2000);
+    // Refresh device state after pairing/revocation without requiring an app restart.
+    setInterval(async () => { try { renderDevices(await invoke('get_trusted_devices')); scheduleWindowFit(); } catch (e) { showAppAlert('No se pudo actualizar el estado de los dispositivos: ' + String(e)); } }, 2000);
   </script>
 </body>
 </html>
