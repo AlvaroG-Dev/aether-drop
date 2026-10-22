@@ -50,6 +50,7 @@ struct SessionRecord {
 struct AuthorizedSession {
     token: String,
     device_id: String,
+    expires_at: Instant,
     cancellation: CancellationToken,
 }
 
@@ -508,6 +509,7 @@ async fn session_from_download_ticket(
     Some(AuthorizedSession {
         token: ticket.session_token,
         device_id: record.device_id,
+        expires_at: record.expires_at,
         cancellation: record.cancellation,
     })
 }
@@ -537,7 +539,9 @@ async fn require_auth(
         }
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let token = bearer_token.expect("checked above");
+    let Some(token) = bearer_token else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     let session = state.session_tokens.read().await.get(&token).cloned();
     let Some(session) = session else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -556,6 +560,7 @@ async fn require_auth(
     request.extensions_mut().insert(AuthorizedSession {
         token,
         device_id: session.device_id,
+        expires_at: session.expires_at,
         cancellation: session.cancellation,
     });
     next.run(request).await
@@ -750,7 +755,7 @@ async fn create_download_ticket(
 }
 
 async fn session_is_authorized(state: &AppState, session: &AuthorizedSession) -> bool {
-    if session.cancellation.is_cancelled() {
+    if session.cancellation.is_cancelled() || session.expires_at <= Instant::now() {
         return false;
     }
     let now = Instant::now();
@@ -779,6 +784,9 @@ async fn handle_upload(
         let next_field = tokio::select! {
             _ = session.cancellation.cancelled() => {
                 return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
+            }
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
+                return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."));
             }
             result = multipart.next_field() => result,
         };
@@ -821,6 +829,9 @@ async fn handle_upload(
                 let next_chunk = tokio::select! {
                     _ = session.cancellation.cancelled() => {
                         return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
+                    }
+                    _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
+                        return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."));
                     }
                     result = field.try_next() => result,
                 };
