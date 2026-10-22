@@ -877,7 +877,8 @@ mod upload_filename_tests {
         finish_chunked_upload, handle_auth, is_allowed_local_authority, origin_matches_authority,
         publish_temp_no_replace, record_auth_failure, sanitize_upload_filename,
         start_chunked_upload, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
-        DownloadTicket, PinRequest, SessionRecord, ServerStatus, UploadFinishRequest, UploadStartRequest,
+        DownloadTicket, PinRequest, SessionRecord, ServerStatus, UploadFinishRequest,
+        UploadStartRequest,
         MAX_AUTH_FAILURES, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_UPLOADS,
         MAX_PENDING_UPLOADS, MAX_TRUSTED_DEVICES, UPLOAD_CHUNK_U64,
     };
@@ -1086,6 +1087,9 @@ mod upload_filename_tests {
             State(state.clone()),
             Extension(session),
             AxumPath(start.transfer_id),
+            Json(UploadFinishRequest {
+                sha256: expected_hash.clone(),
+            }),
         )
         .await
         .unwrap();
@@ -1095,6 +1099,54 @@ mod upload_filename_tests {
         assert_eq!(tokio::fs::read(directory.join("roundtrip.bin")).await.unwrap(), data);
         assert_eq!(state.reserved_upload_bytes.load(Ordering::Acquire), 0);
         assert!(state.pending_uploads.read().await.is_empty());
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wrong_original_file_hash_never_publishes_the_destination() {
+        let directory = test_directory().await;
+        let (state, session) = test_state(directory.clone());
+        let data = b"the correct bytes but a wrong client finish digest".to_vec();
+        let actual_hash = format!("{:x}", Sha256::digest(&data));
+        let Json(start) = start_chunked_upload(
+            State(state.clone()),
+            Extension(session.clone()),
+            Json(UploadStartRequest {
+                filename: "must-not-publish.bin".to_owned(),
+                size_bytes: data.len() as u64,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-chunk-sha256", HeaderValue::from_str(&actual_hash).unwrap());
+        upload_chunk(
+            State(state.clone()),
+            Extension(session.clone()),
+            AxumPath((start.transfer_id.clone(), 0)),
+            headers,
+            Bytes::from(data),
+        )
+        .await
+        .unwrap();
+
+        let error = finish_chunked_upload(
+            State(state.clone()),
+            Extension(session),
+            AxumPath(start.transfer_id),
+            Json(UploadFinishRequest {
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(!tokio::fs::try_exists(directory.join("must-not-publish.bin")).await.unwrap());
+        assert_eq!(state.reserved_upload_bytes.load(Ordering::Acquire), 0);
+        assert!(state.pending_uploads.read().await.is_empty());
+        assert!(tokio::fs::read_dir(&directory).await.unwrap().next_entry().await.unwrap().is_none());
         tokio::fs::remove_dir_all(&directory).await.unwrap();
     }
 
