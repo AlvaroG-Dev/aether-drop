@@ -28,6 +28,8 @@ use serde::{Deserialize, Serialize};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use arboard::Clipboard;
 
+mod webtransport;
+
 const MAX_UPLOAD_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_CONCURRENT_UPLOADS: usize = 3;
 const MAX_CONCURRENT_DOWNLOADS: usize = 3;
@@ -200,6 +202,8 @@ struct AppState {
     server_status: Arc<RwLock<ServerStatus>>,
     server_shutdown: CancellationToken,
     mdns_daemon: Arc<std::sync::Mutex<Option<ServiceDaemon>>>,
+    webtransport_info: Arc<RwLock<Option<webtransport::WebTransportInfo>>>,
+    webtransport_error: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Serialize)]
@@ -208,6 +212,10 @@ pub struct ConnectionInfo {
     qr_base64: String,
     save_path: String,
     pin: String,
+    webtransport_url: Option<String>,
+    webtransport_certificate_hash: Option<String>,
+    webtransport_origin: String,
+    webtransport_error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -257,12 +265,18 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
     let base64_img = general_purpose::STANDARD.encode(buffer.get_ref());
 
     let dir = state.save_dir.read().await;
+    let webtransport_info = state.webtransport_info.read().await.clone();
+    let webtransport_error = state.webtransport_error.read().await.clone();
 
     Ok(ConnectionInfo {
         url,
         qr_base64: format!("data:image/png;base64,{}", base64_img),
         save_path: dir.to_string_lossy().to_string(),
         pin: state.pin.clone(),
+        webtransport_url: webtransport_info.as_ref().map(|info| info.url.clone()),
+        webtransport_certificate_hash: webtransport_info.as_ref().map(|info| info.certificate_hash.clone()),
+        webtransport_origin: webtransport::ALLOWED_ORIGIN.to_owned(),
+        webtransport_error,
     })
 }
 
@@ -2391,6 +2405,31 @@ fn start_local_server(state: AppState) {
                 }
             };
 
+            // Start the experimental WebTransport/QUIC endpoint independently from
+            // the legacy HTTP transfer path. It currently proves pinned TLS + pairing
+            // only; file traffic is not routed through it yet.
+            let (webtransport_ready_tx, webtransport_ready_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(webtransport::run(
+                state.pin.clone(),
+                state.server_shutdown.clone(),
+                webtransport_ready_tx,
+            ));
+            match tokio::time::timeout(Duration::from_secs(5), webtransport_ready_rx).await {
+                Ok(Ok(Ok(info))) => {
+                    *state.webtransport_info.write().await = Some(info);
+                    *state.webtransport_error.write().await = None;
+                }
+                Ok(Ok(Err(error))) => {
+                    eprintln!("AetherDrop: WebTransport no disponible: {error}");
+                    *state.webtransport_error.write().await = Some(error);
+                }
+                _ => {
+                    let error = "WebTransport no respondió durante el arranque.".to_owned();
+                    eprintln!("AetherDrop: {error}");
+                    *state.webtransport_error.write().await = Some(error);
+                }
+            }
+
             // Advertise the service only after port 8080 is actually bound.
             start_mdns_service(state.clone());
             let initial_dir = state.save_dir.read().await.clone();
@@ -2530,6 +2569,8 @@ pub fn run() {
         server_status: Arc::new(RwLock::new(ServerStatus::Starting)),
         server_shutdown: CancellationToken::new(),
         mdns_daemon: Arc::new(std::sync::Mutex::new(None)),
+        webtransport_info: Arc::new(RwLock::new(None)),
+        webtransport_error: Arc::new(RwLock::new(None)),
     };
 
     start_local_server(state.clone());
