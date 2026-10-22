@@ -486,6 +486,7 @@ async fn serve_ui() -> axum::response::Response {
                   <div class="progress-meta"><span id="progressStatus">Enviando archivos…</span><span id="progressPercent">0%</span></div>
                   <div class="progress-track"><div id="progressBar" style="width:0%"></div></div>
                 </div>
+                <button type="button" id="cancelUploadButton" class="secondary-button hidden" style="border-color:#f5dfe4;color:#a8324a">Cancelar transferencia</button>
                 <div id="toast" class="hidden"></div>
 
                 <hr class="mobile-divider">
@@ -507,6 +508,7 @@ async fn serve_ui() -> axum::response::Response {
               </section>
               <p style="text-align:center;font-size:10px;color:#a0a6b5;margin:14px 0 0">Transferencia local · AetherDrop</p>
             </main>
+            <script src="/sha256.js" defer></script>
             <script src="/mobile.js" defer></script>
         </body>
         </html>
