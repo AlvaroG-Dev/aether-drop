@@ -211,7 +211,19 @@
                             Number(status.status.size_bytes) === file.size) {
                             return { ok: true, transferId: saved.transfer_id, status: status.status, storageKey, resumed: true };
                         }
-                        try { sessionStorage.removeItem(storageKey); } catch (_) {}
+                        if (!status.ok && ![403, 404, 410].includes(status.status)) {
+                            // Keep the saved transfer ID through transient server/network
+                            // failures. Starting a second transfer here could reserve disk
+                            // twice and leave the first hidden temporary file orphaned.
+                            return { ok: false, status: status.status, message: status.message || 'No se pudo consultar el estado de la transferencia anterior.' };
+                        }
+                        if (status.ok) {
+                            // A server-side name/size mismatch means this ID must not be
+                            // reused. Request explicit cleanup before creating another.
+                            await cancelPendingUpload(saved.transfer_id, storageKey);
+                        } else {
+                            try { sessionStorage.removeItem(storageKey); } catch (_) {}
+                        }
                     }
 
                     const response = await authorizedFetch('/upload/start', {
