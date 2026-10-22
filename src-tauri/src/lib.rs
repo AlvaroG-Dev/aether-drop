@@ -1586,7 +1586,9 @@ async fn finish_chunked_upload(
             return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
         }
 
-        match publish_temp_for_session(&state, &session, &upload.temp_path, &state.save_dir.read().await.join(&upload.filename)).await {
+        let destination_directory = upload.temp_path.parent().unwrap_or_else(|| Path::new("."));
+        let destination_path = destination_directory.join(&upload.filename);
+        match publish_temp_for_session(&state, &session, &upload.temp_path, &destination_path).await {
             Ok(()) => Ok(UploadReceipt {
                 filename: upload.filename.clone(),
                 size_bytes: upload.expected_size,
@@ -1888,6 +1890,11 @@ fn start_local_server(state: AppState) {
                 .route("/auth", post(handle_auth).layer(DefaultBodyLimit::max(MAX_AUTH_REQUEST_BYTES)))
                 .route("/session", get(check_session))
                 .route("/upload", post(handle_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_REQUEST_BYTES)))
+                .route("/upload/start", post(start_chunked_upload).layer(DefaultBodyLimit::max(MAX_AUTH_REQUEST_BYTES)))
+                .route("/upload/status/:transfer_id", get(chunked_upload_status))
+                .route("/upload/chunk/:transfer_id/:chunk_index", post(upload_chunk).layer(DefaultBodyLimit::max(UPLOAD_CHUNK_BYTES)))
+                .route("/upload/finish/:transfer_id", post(finish_chunked_upload).layer(DefaultBodyLimit::max(MAX_AUTH_REQUEST_BYTES)))
+                .route("/upload/cancel/:transfer_id", delete(cancel_chunked_upload))
                 .route("/files", get(list_pc_files))
                 .route("/download-ticket/:id", post(create_download_ticket))
                 .route("/download/:id", get(download_pc_file))
@@ -1927,6 +1934,9 @@ pub fn run() {
         session_tokens: Arc::new(RwLock::new(HashMap::new())),
         auth_failures: Arc::new(RwLock::new(HashMap::new())),
         upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+        pending_upload_slots: Arc::new(Semaphore::new(MAX_PENDING_UPLOADS)),
+        pending_uploads: Arc::new(RwLock::new(HashMap::new())),
+        reserved_upload_bytes: Arc::new(AtomicU64::new(0)),
         download_tickets: Arc::new(RwLock::new(HashMap::new())),
         server_status: Arc::new(RwLock::new(ServerStatus::Starting)),
         server_shutdown: CancellationToken::new(),
