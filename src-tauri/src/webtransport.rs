@@ -2,16 +2,18 @@
 //! This module proves the browser TLS/pinning handshake only; file transfer is not
 //! routed through this endpoint until end-to-end tests have passed.
 
-use std::{net::IpAddr, time::Duration};
+use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::oneshot, time::timeout};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{oneshot, Mutex}, time::timeout};
 use tokio_util::sync::CancellationToken;
 use wtransport::{tls::Sha256DigestFmt, Endpoint, Identity, ServerConfig};
 
 pub const PORT: u16 = 8443;
 pub const ALLOWED_ORIGIN: &str = "https://alvarog-dev.github.io";
 const MAX_HELLO_BYTES: usize = 512;
+const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
+const MAX_PIN_ATTEMPTS_PER_WINDOW: u32 = 5;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WebTransportInfo {
@@ -75,11 +77,13 @@ pub async fn run(
         return;
     }
 
+    let auth_failures: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>> = Arc::new(Mutex::new(HashMap::new()));
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
             incoming = endpoint.accept() => {
                 let expected_pin = pin.clone();
+                let auth_failures = auth_failures.clone();
                 tokio::spawn(async move {
                     let request = match timeout(Duration::from_secs(5), incoming).await {
                         Ok(Ok(request)) => request,
@@ -89,6 +93,17 @@ pub async fn run(
                         || request.path() != "/aetherdrop-wt-probe-v1"
                     {
                         let _ = request.forbidden().await;
+                        return;
+                    }
+                    let remote_ip = request.remote_address().ip();
+                    let blocked = {
+                        let now = Instant::now();
+                        let mut failures = auth_failures.lock().await;
+                        failures.retain(|_, (_, last_failure)| now.duration_since(*last_failure) < AUTH_FAILURE_WINDOW);
+                        failures.get(&remote_ip).is_some_and(|(attempts, _)| *attempts >= MAX_PIN_ATTEMPTS_PER_WINDOW)
+                    };
+                    if blocked {
+                        let _ = request.too_many_requests().await;
                         return;
                     }
                     let connection = match timeout(Duration::from_secs(5), request.accept()).await {
@@ -120,6 +135,19 @@ pub async fn run(
                     let valid = serde_json::from_slice::<PairRequest>(&request_bytes)
                         .map(|request| request.kind == "pair" && constant_time_eq(request.pin.as_bytes(), expected_pin.as_bytes()))
                         .unwrap_or(false);
+                    if valid {
+                        auth_failures.lock().await.remove(&remote_ip);
+                    } else {
+                        let now = Instant::now();
+                        let mut failures = auth_failures.lock().await;
+                        let entry = failures.entry(remote_ip).or_insert((0, now));
+                        if now.duration_since(entry.1) >= AUTH_FAILURE_WINDOW {
+                            *entry = (1, now);
+                        } else {
+                            entry.0 = entry.0.saturating_add(1);
+                            entry.1 = now;
+                        }
+                    }
                     let response: &[u8] = if valid {
                         b"{\"ok\":true,\"protocol\":\"aetherdrop-webtransport-v1\"}\n"
                     } else {
