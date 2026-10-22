@@ -2149,7 +2149,7 @@ async fn set_clipboard(
     Ok(StatusCode::OK)
 }
 
-async async fn cleanup_stale_uploads(directory: &Path) {
+async fn cleanup_stale_uploads(directory: &Path) {
     let mut entries = match tokio::fs::read_dir(directory).await {
         Ok(entries) => entries,
         Err(error) => {
