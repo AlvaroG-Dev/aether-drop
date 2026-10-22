@@ -1142,6 +1142,85 @@ mod upload_filename_tests {
     }
 
     #[tokio::test]
+    async fn multi_chunk_upload_preserves_order_and_full_file_hash() {
+        let directory = test_directory().await;
+        let (state, session) = test_state(directory.clone());
+        let mut data = vec![0x5Au8; UPLOAD_CHUNK_U64 as usize + 137];
+        for (index, byte) in data.iter_mut().enumerate().skip(UPLOAD_CHUNK_U64 as usize) {
+            *byte = (index % 251) as u8;
+        }
+        let full_hash = format!("{:x}", Sha256::digest(&data));
+        let first_chunk = &data[..UPLOAD_CHUNK_U64 as usize];
+        let second_chunk = &data[UPLOAD_CHUNK_U64 as usize..];
+        let Json(start) = start_chunked_upload(
+            State(state.clone()),
+            Extension(session.clone()),
+            Json(UploadStartRequest {
+                filename: "multi-chunk.bin".to_owned(),
+                size_bytes: data.len() as u64,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(start.chunks_total, 2);
+
+        let mut first_headers = HeaderMap::new();
+        first_headers.insert(
+            "x-chunk-sha256",
+            HeaderValue::from_str(&format!("{:x}", Sha256::digest(first_chunk))).unwrap(),
+        );
+        let Json(after_first) = upload_chunk(
+            State(state.clone()),
+            Extension(session.clone()),
+            Extension(super::UploadRequestPermit(Arc::new(
+                state.upload_slots.clone().acquire_owned().await.unwrap()
+            ))),
+            AxumPath((start.transfer_id.clone(), 0)),
+            first_headers,
+            Bytes::copy_from_slice(first_chunk),
+        )
+        .await
+        .unwrap();
+        assert_eq!(after_first.next_chunk, 1);
+        assert_eq!(after_first.received_bytes, UPLOAD_CHUNK_U64);
+        assert_eq!(after_first.chunk_hashes.len(), 1);
+
+        let mut second_headers = HeaderMap::new();
+        second_headers.insert(
+            "x-chunk-sha256",
+            HeaderValue::from_str(&format!("{:x}", Sha256::digest(second_chunk))).unwrap(),
+        );
+        let Json(after_second) = upload_chunk(
+            State(state.clone()),
+            Extension(session.clone()),
+            Extension(super::UploadRequestPermit(Arc::new(
+                state.upload_slots.clone().acquire_owned().await.unwrap()
+            ))),
+            AxumPath((start.transfer_id.clone(), 1)),
+            second_headers,
+            Bytes::copy_from_slice(second_chunk),
+        )
+        .await
+        .unwrap();
+        assert_eq!(after_second.next_chunk, 2);
+        assert_eq!(after_second.received_bytes, data.len() as u64);
+        assert_eq!(after_second.chunk_hashes.len(), 2);
+
+        let Json(finished) = finish_chunked_upload(
+            State(state.clone()),
+            Extension(session),
+            AxumPath(start.transfer_id),
+            Json(UploadFinishRequest { sha256: full_hash.clone() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(finished.files[0].sha256, full_hash);
+        assert_eq!(tokio::fs::read(directory.join("multi-chunk.bin")).await.unwrap(), data);
+        assert_eq!(state.reserved_upload_bytes.load(Ordering::Acquire), 0);
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn wrong_original_file_hash_never_publishes_the_destination() {
         let directory = test_directory().await;
         let (state, session) = test_state(directory.clone());
