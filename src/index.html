@@ -158,7 +158,7 @@
       <article class="panel list-panel">
         <div class="list-heading"><h2>Archivos para enviar</h2><span class="count" id="fileCount">0 archivos</span></div>
         <div id="sharedList" class="item-list"><div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10z"/><path d="M13 3v7h7M8 15h8M8 18h5"/></svg>Aún no has añadido archivos.</div></div>
-        <button onclick="shareFile()" class="primary-btn" style="margin-top:13px;width:100%"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Añadir archivos</button>
+        <button id="addSharedFileButton" class="primary-btn" style="margin-top:13px;width:100%"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Añadir archivos</button>
       </article>
       <article class="panel list-panel">
         <div class="list-heading"><h2>Dispositivos vinculados</h2><span class="count" id="deviceCount">0 dispositivos</span></div>
@@ -169,7 +169,7 @@
     <section class="folder-bar">
       <div class="folder-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>
       <div class="folder-copy"><div class="field-label">Carpeta de recepción</div><div id="savePath" class="folder-path">Cargando ubicación…</div></div>
-      <button onclick="changeDirectory()" class="subtle-btn">Cambiar</button>
+      <button id="changeDirectoryButton" class="subtle-btn">Cambiar</button>
     </section>
 
     <footer class="footer"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>Transferencia local · sin nube</span><span>AetherDrop <span aria-hidden="true">·</span> Simple por diseño</span></footer>
@@ -317,6 +317,11 @@
       return element.innerHTML;
     }
 
+    function escapeAttribute(value) {
+      return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
+    }
+
     function emptyState(kind, message) {
       const icon = kind === 'file'
         ? '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10z"/><path d="M13 3v7h7M8 15h8"/></svg>'
@@ -335,9 +340,12 @@
         <div class="file-item">
           <span class="item-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10z"/><path d="M13 3v7h7"/></svg></span>
           <span class="item-name">${escapeHtml(f.name)}</span>
-          <button onclick="removeFile('${escapeHtml(f.id)}')" class="item-action" aria-label="Quitar archivo" title="Quitar archivo">Quitar</button>
+          <button data-action="remove-file" data-file-id="${escapeAttribute(f.id)}" class="item-action" aria-label="Quitar archivo" title="Quitar archivo">Quitar</button>
         </div>
       `).join('');
+      list.querySelectorAll('[data-action="remove-file"]').forEach(button => {
+        button.addEventListener('click', () => window.removeFile(button.dataset.fileId));
+      });
     }
 
     function renderDevices(devices) {
@@ -358,10 +366,16 @@
         <div class="device-item">
           <span class="item-icon" style="background:var(--green-soft);color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10 18h4"/></svg></span>
           <span class="item-name" title="${escapeHtml(d)}">${escapeHtml(d)}</span>
-          <button onclick="revokeDevice('${escapeHtml(d)}')" class="item-action" aria-label="Revocar dispositivo">Revocar</button>
+          <button data-action="revoke-device" data-device-id="${escapeAttribute(d)}" class="item-action" aria-label="Revocar dispositivo">Revocar</button>
         </div>
       `).join('');
+      list.querySelectorAll('[data-action="revoke-device"]').forEach(button => {
+        button.addEventListener('click', () => window.revokeDevice(button.dataset.deviceId));
+      });
     }
+
+    document.getElementById('addSharedFileButton').addEventListener('click', () => window.shareFile());
+    document.getElementById('changeDirectoryButton').addEventListener('click', () => window.changeDirectory());
 
     initApp();
     // Refresh device state after pairing/revocation without requiring an app restart.
