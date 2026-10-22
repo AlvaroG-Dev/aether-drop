@@ -239,7 +239,12 @@
                         const status = await getUploadStatus(saved.transfer_id);
                         if (status.revoked) return { revoked: true, message: status.message };
                         if (status.ok && status.completedReceipt) {
-                            return { ok: true, completedReceipt: status.completedReceipt, storageKey, resumed: true };
+                            const receipt = status.completedReceipt;
+                            if (receipt.filename !== file.name || Number(receipt.size_bytes) !== file.size) {
+                                try { localStorage.removeItem(storageKey); } catch (_) {}
+                                return { ok: false, message: 'El recibo guardado no coincide con el archivo seleccionado.' };
+                            }
+                            return { ok: true, completedReceipt: receipt, storageKey, resumed: true };
                         }
                         if (status.ok && status.status.filename === file.name &&
                             Number(status.status.size_bytes) === file.size) {
