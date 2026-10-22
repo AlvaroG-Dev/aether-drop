@@ -524,6 +524,7 @@ async fn serve_ui() -> axum::response::Response {
                   <div class="progress-meta"><span id="progressStatus">Enviando archivos…</span><span id="progressPercent">0%</span></div>
                   <div class="progress-track"><div id="progressBar" style="width:0%"></div></div>
                 </div>
+                <button type="button" id="pauseUploadButton" class="secondary-button hidden">Pausar transferencia</button>
                 <button type="button" id="cancelUploadButton" class="secondary-button hidden" style="border-color:#f5dfe4;color:#a8324a">Cancelar transferencia</button>
                 <div id="toast" class="hidden"></div>
 
