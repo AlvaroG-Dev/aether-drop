@@ -742,13 +742,30 @@ fn sanitize_upload_filename(input: &str) -> Option<String> {
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| {
+            let windows_stem = name
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches(' ')
+                .to_ascii_uppercase();
+            let reserved_device_name = matches!(
+                windows_stem.as_str(),
+                "CON" | "PRN" | "AUX" | "NUL"
+            ) || (windows_stem.len() == 4
+                && (windows_stem.starts_with("COM") || windows_stem.starts_with("LPT"))
+                && windows_stem.as_bytes()[3].is_ascii_digit()
+                && windows_stem.as_bytes()[3] != b'0');
+
             !name.is_empty()
                 && *name != "."
                 && *name != ".."
                 && name.len() <= 240
-                && !name.chars().any(char::is_control)
+                && !name.chars().any(|ch| {
+                    char::is_control(ch) || matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*')
+                })
                 && !name.ends_with(' ')
                 && !name.ends_with('.')
+                && !reserved_device_name
         })
         .map(str::to_owned)
 }
@@ -811,6 +828,12 @@ mod upload_filename_tests {
         assert_eq!(sanitize_upload_filename("bad\nname.txt"), None);
         assert_eq!(sanitize_upload_filename("name.txt "), None);
         assert_eq!(sanitize_upload_filename("name."), None);
+        assert_eq!(sanitize_upload_filename("invalid:name.txt"), None);
+        assert_eq!(sanitize_upload_filename("name?.txt"), None);
+        assert_eq!(sanitize_upload_filename("CON"), None);
+        assert_eq!(sanitize_upload_filename("nul.txt"), None);
+        assert_eq!(sanitize_upload_filename("COM1.log"), None);
+        assert_eq!(sanitize_upload_filename("LPT9"), None);
         assert_eq!(sanitize_upload_filename(&"x".repeat(241)), None);
     }
 
@@ -886,6 +909,16 @@ mod upload_filename_tests {
             digest,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn chunk_count_handles_empty_exact_and_partial_boundaries() {
+        use super::{chunks_for_size, UPLOAD_CHUNK_U64};
+        assert_eq!(chunks_for_size(0), 0);
+        assert_eq!(chunks_for_size(1), 1);
+        assert_eq!(chunks_for_size(UPLOAD_CHUNK_U64), 1);
+        assert_eq!(chunks_for_size(UPLOAD_CHUNK_U64 + 1), 2);
+        assert_eq!(chunks_for_size(2 * 1024 * 1024 * 1024), 256);
     }
 
     #[test]
