@@ -336,6 +336,15 @@ async fn get_shared_files_internal(state: &AppState) -> Result<Vec<serde_json::V
 }
 
 // PWA Móvil ultra-premium con subida múltiple, barra de progreso real y alertas de estado
+async fn serve_sha256_js() -> axum::response::Response {
+    axum::response::Response::builder()
+        .header("Content-Type", "application/javascript; charset=utf-8")
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(axum::body::Body::from(include_str!("sha256.js")))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 async fn serve_mobile_js() -> axum::response::Response {
     axum::response::Response::builder()
         .header("Content-Type", "application/javascript; charset=utf-8")
@@ -631,7 +640,7 @@ async fn require_auth(
             return StatusCode::FORBIDDEN.into_response();
         }
     }
-    if request.uri().path() == "/" || request.uri().path() == "/auth" || request.uri().path() == "/mobile.js" {
+    if request.uri().path() == "/" || request.uri().path() == "/auth" || request.uri().path() == "/mobile.js" || request.uri().path() == "/sha256.js" {
         return next.run(request).await;
     }
     let bearer_token = request.headers()
@@ -1920,6 +1929,7 @@ fn start_local_server(state: AppState) {
             let app = Router::new()
                 .route("/", get(serve_ui))
                 .route("/mobile.js", get(serve_mobile_js))
+                .route("/sha256.js", get(serve_sha256_js))
                 .route("/auth", post(handle_auth).layer(DefaultBodyLimit::max(MAX_AUTH_REQUEST_BYTES)))
                 .route("/session", get(check_session))
                 .route("/upload", post(handle_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_REQUEST_BYTES)))
