@@ -1288,11 +1288,18 @@ fn start_mdns_service(state: AppState) {
             }
         };
         match daemon.register(service_info) {
-            Ok(()) => {
-                if let Ok(mut slot) = state.mdns_daemon.lock() {
+            Ok(()) => match state.mdns_daemon.lock() {
+                Ok(mut slot) if !state.server_shutdown.is_cancelled() => {
                     *slot = Some(daemon);
                 }
-            }
+                Ok(_slot) => {
+                    let _ = daemon.shutdown();
+                }
+                Err(_) => {
+                    eprintln!("AetherDrop: no se pudo guardar el estado de mDNS; se detiene el anuncio.");
+                    let _ = daemon.shutdown();
+                }
+            },
             Err(error) => {
                 eprintln!("AetherDrop: no se pudo registrar mDNS: {}", error);
                 let _ = daemon.shutdown();
@@ -1374,6 +1381,7 @@ fn start_local_server(state: AppState) {
 
             let status = state.server_status.clone();
             let server_shutdown = state.server_shutdown.clone();
+            let mdns_service = state.mdns_daemon.clone();
             let app = Router::new()
                 .route("/", get(serve_ui))
                 .route("/mobile.js", get(serve_mobile_js))
@@ -1396,6 +1404,10 @@ fn start_local_server(state: AppState) {
                 let message = format!("El servidor local se ha detenido: {}", error);
                 eprintln!("AetherDrop: {}", message);
                 *status.write().await = ServerStatus::Failed(message);
+                let daemon = mdns_service.lock().ok().and_then(|slot| slot.as_ref().cloned());
+                if let Some(daemon) = daemon {
+                    let _ = daemon.shutdown();
+                }
             }
         });
     });
