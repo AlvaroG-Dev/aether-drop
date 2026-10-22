@@ -67,9 +67,9 @@ Comprobaciones locales equivalentes a CI:
 node --check src/app.js
 node --check src-tauri/src/mobile.js
 cargo fmt --manifest-path src-tauri/Cargo.toml --all
-cargo test --locked --manifest-path src-tauri/Cargo.toml
-cargo check --locked --manifest-path src-tauri/Cargo.toml
-cargo clippy --all-targets --locked --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml
 ```
 
 El workflow de GitHub Actions ejecuta estas comprobaciones de JavaScript y Rust en Ubuntu, incluidos tests, compilación y Clippy. Una CI correcta no sustituye las pruebas de interfaz y transferencia en Windows, Linux y teléfonos físicos.
