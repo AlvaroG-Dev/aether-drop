@@ -406,15 +406,31 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                             input.value = "";
                             setBridgeState('paired', 'Transferencia completada');
                         } else {
-                            showToast("Error en el servidor al guardar el archivo.", false);
+                            let detail = (xhr.responseText || '').trim();
+                            const known = {
+                              400: 'La petición o el nombre del archivo no son válidos.',
+                              401: 'La sesión ha caducado. Vuelve a vincular el móvil con el PIN.',
+                              409: 'Ya existe un archivo con ese nombre en el PC.',
+                              413: 'El archivo o la petición supera el límite permitido.',
+                              429: 'Demasiados intentos. Espera un minuto y vuelve a probar.',
+                              500: 'El PC no pudo guardar el archivo. Comprueba permisos y espacio disponible.'
+                            };
+                            if (!detail || detail.length > 240) detail = known[xhr.status] || 'El servidor rechazó la transferencia.';
+                            if (xhr.status === 409) detail = 'Ya existe un archivo con ese nombre. Cambia el nombre del archivo y vuelve a intentarlo.';
+                            showToast('Error HTTP ' + xhr.status + ': ' + detail, false);
                             setBridgeState('paired', 'No se pudo completar la transferencia');
                         }
                     };
 
                     xhr.onerror = () => {
                         progressContainer.classList.add('hidden');
-                        showToast("Error de conexión con la red local.", false);
+                        showToast("No se pudo conectar con el PC. Comprueba la Wi-Fi, el firewall y que AetherDrop siga abierto.", false);
                         setBridgeState('paired', 'Conexión interrumpida');
+                    };
+                    xhr.onabort = () => {
+                        progressContainer.classList.add('hidden');
+                        showToast("La subida se canceló antes de terminar. El archivo no se considera transferido.", false);
+                        setBridgeState('paired', 'Transferencia cancelada');
                     };
 
                     xhr.send(formData);
@@ -438,31 +454,51 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
                     } catch(e) {}
                 }
 
-                async function syncClipboard() {
+                let lastServerClipboard = null;
+                let clipboardDirty = false;
+                const clipboardField = document.getElementById('clipboardText');
+                clipboardField.addEventListener('input', () => {
+                    clipboardDirty = clipboardField.value !== lastServerClipboard;
+                });
+
+                async function syncClipboard(force = false) {
                     try {
-                        const res = await fetch('/clipboard', { headers: authHeaders() });
+                        const res = await fetch('/clipboard', { headers: authHeaders(), cache: 'no-store' });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
                         const data = await res.json();
-                        if (data.text !== undefined) {
-                            document.getElementById('clipboardText').value = data.text;
+                        if (typeof data.text !== 'string') return;
+                        if (!force && (clipboardDirty || document.activeElement === clipboardField)) return;
+                        if (data.text !== lastServerClipboard || force) {
+                            clipboardField.value = data.text;
+                            lastServerClipboard = data.text;
+                            clipboardDirty = false;
                         }
-                    } catch(e) {}
+                    } catch(e) { /* transient network errors are retried on the next poll */ }
                 }
 
                 async function sendClipboard() {
-                    const text = document.getElementById('clipboardText').value;
-                    await fetch('/clipboard', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                        body: JSON.stringify({ text })
-                    });
-                    showToast("Portapapeles enviado al PC", true);
+                    const text = clipboardField.value;
+                    try {
+                        const res = await fetch('/clipboard', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                            body: JSON.stringify({ text })
+                        });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        lastServerClipboard = text;
+                        clipboardDirty = false;
+                        showToast("Texto enviado al ordenador.", true);
+                        clipboardField.blur();
+                    } catch (e) {
+                        showToast("No se pudo enviar el texto: " + String(e), false);
+                    }
                 }
 
                 function startSync() {
                     setInterval(fetchFiles, 3000);
-                    setInterval(syncClipboard, 3000);
+                    setInterval(() => syncClipboard(false), 3000);
                     fetchFiles();
-                    syncClipboard();
+                    syncClipboard(true);
                 }
 
                 checkAuth();
