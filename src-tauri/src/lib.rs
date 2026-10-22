@@ -42,6 +42,7 @@ const MAX_CLIPBOARD_REQUEST_BYTES: usize = 6 * 1024 * 1024;
 const MAX_AUTH_REQUEST_BYTES: usize = 4 * 1024;
 const DISK_SPACE_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TRACKED_AUTH_IPS: usize = 1024;
+const MAX_TRUSTED_DEVICES: usize = 64;
 const MAX_AUTH_FAILURES: u32 = 10;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const AUTH_BLOCK_DURATION: Duration = Duration::from_secs(60);
@@ -732,16 +733,46 @@ async fn handle_auth(
     {
         let mut devices = state.trusted_devices.write().await;
         if !devices.contains(&payload.device_id) {
+            if devices.len() >= MAX_TRUSTED_DEVICES {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "El ordenador ya tiene el máximo de dispositivos vinculados. Revoca uno desde el escritorio e inténtalo de nuevo.",
+                ).into_response();
+            }
             devices.push(payload.device_id.clone());
         }
     }
+
+    // A device has at most one active bearer session. Re-pairing rotates the token
+    // and cancels all uploads tied to the old session rather than leaving stale
+    // temporary files or several valid tokens behind.
     let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     let record = SessionRecord {
-        device_id: payload.device_id,
+        device_id: payload.device_id.clone(),
         expires_at: now + SESSION_TTL,
         cancellation: CancellationToken::new(),
     };
-    state.session_tokens.write().await.insert(token.clone(), record);
+    {
+        let mut sessions = state.session_tokens.write().await;
+        sessions.retain(|_, session| {
+            if session.device_id == payload.device_id {
+                session.cancellation.cancel();
+                false
+            } else {
+                true
+            }
+        });
+        sessions.insert(token.clone(), record);
+    }
+
+    let stale_transfers: Vec<String> = state.pending_uploads.read().await
+        .iter()
+        .filter(|(_, upload)| upload.owner_device_id == payload.device_id)
+        .map(|(transfer_id, _)| transfer_id.clone())
+        .collect();
+    for transfer_id in stale_transfers {
+        remove_pending_upload(&state, &transfer_id).await;
+    }
     (StatusCode::OK, Json(serde_json::json!({
         "token": token,
         "expires_in": SESSION_TTL.as_secs()
