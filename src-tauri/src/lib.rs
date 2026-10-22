@@ -12,7 +12,8 @@ use local_ip_address::local_ip;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use std::sync::Arc;
 use std::collections::HashMap;
 use rand::Rng;
@@ -106,6 +107,7 @@ struct AppState {
     upload_slots: Arc<Semaphore>,
     download_tickets: Arc<RwLock<HashMap<String, DownloadTicket>>>,
     server_status: Arc<RwLock<ServerStatus>>,
+    server_shutdown: CancellationToken,
     mdns_daemon: Arc<std::sync::Mutex<Option<ServiceDaemon>>>,
 }
 
@@ -186,6 +188,7 @@ async fn set_save_directory(path: String, state: tauri::State<'_, AppState>) -> 
     drop(probe);
     tokio::fs::remove_file(&probe_path).await
         .map_err(|error| format!("No se pudo limpiar la prueba de escritura: {}", error))?;
+    cleanup_stale_uploads(&canonical).await;
     let display_path = canonical.to_string_lossy().to_string();
     *state.save_dir.write().await = canonical;
     Ok(display_path)
@@ -1005,8 +1008,44 @@ async fn set_clipboard(
     Ok(StatusCode::OK)
 }
 
-fn start_local_server(state: AppState) {
-    let mdns_state = state.clone();
+async fn cleanup_stale_uploads(directory: &Path) {
+    let mut entries = match tokio::fs::read_dir(directory).await {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("AetherDrop: no se pudieron revisar los temporales de {:?}: {}", directory, error);
+            return;
+        }
+    };
+    let now = SystemTime::now();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(".aetherdrop-upload-") || !name.ends_with(".part") {
+            continue;
+        }
+        let file_type = match entry.file_type().await {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let metadata = match entry.metadata().await {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        let stale = metadata.modified().ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= Duration::from_secs(24 * 60 * 60));
+        if stale {
+            if let Err(error) = tokio::fs::remove_file(entry.path()).await {
+                eprintln!("AetherDrop: no se pudo borrar el temporal antiguo {:?}: {}", entry.path(), error);
+            }
+        }
+    }
+}
+
+fn start_mdns_service(state: AppState) {
     std::thread::spawn(move || {
         let daemon = match ServiceDaemon::new() {
             Ok(daemon) => daemon,
@@ -1019,6 +1058,7 @@ fn start_local_server(state: AppState) {
             Ok(ip) => ip,
             Err(error) => {
                 eprintln!("AetherDrop: no se pudo anunciar mDNS: {}", error);
+                let _ = daemon.shutdown();
                 return;
             }
         };
@@ -1034,19 +1074,25 @@ fn start_local_server(state: AppState) {
             Ok(service_info) => service_info,
             Err(error) => {
                 eprintln!("AetherDrop: anuncio mDNS no válido: {}", error);
+                let _ = daemon.shutdown();
                 return;
             }
         };
         match daemon.register(service_info) {
             Ok(()) => {
-                if let Ok(mut slot) = mdns_state.mdns_daemon.lock() {
+                if let Ok(mut slot) = state.mdns_daemon.lock() {
                     *slot = Some(daemon);
                 }
             }
-            Err(error) => eprintln!("AetherDrop: no se pudo registrar mDNS: {}", error),
+            Err(error) => {
+                eprintln!("AetherDrop: no se pudo registrar mDNS: {}", error);
+                let _ = daemon.shutdown();
+            }
         }
     });
+}
 
+fn start_local_server(state: AppState) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -1071,8 +1117,54 @@ fn start_local_server(state: AppState) {
                 }
             };
 
+            // Advertise the service only after port 8080 is actually bound.
+            start_mdns_service(state.clone());
+            let initial_dir = state.save_dir.read().await.clone();
+            cleanup_stale_uploads(&initial_dir).await;
             *state.server_status.write().await = ServerStatus::Ready;
+
+            let maintenance_state = state.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(5 * 60));
+                loop {
+                    tokio::select! {
+                        _ = maintenance_state.server_shutdown.cancelled() => break,
+                        _ = interval.tick() => {
+                            let now = Instant::now();
+                            let trusted: std::collections::HashSet<String> =
+                                maintenance_state.trusted_devices.read().await.iter().cloned().collect();
+                            {
+                                let mut sessions = maintenance_state.session_tokens.write().await;
+                                sessions.retain(|_, session| {
+                                    let keep = session.expires_at > now
+                                        && trusted.contains(&session.device_id)
+                                        && !session.cancellation.is_cancelled();
+                                    if !keep {
+                                        session.cancellation.cancel();
+                                    }
+                                    keep
+                                });
+                            }
+                            {
+                                let mut tickets = maintenance_state.download_tickets.write().await;
+                                tickets.retain(|_, ticket| ticket.expires_at > now);
+                            }
+                            {
+                                let mut failures = maintenance_state.auth_failures.write().await;
+                                failures.retain(|_, entry| {
+                                    entry.window_started.elapsed() < AUTH_FAILURE_WINDOW
+                                        || entry.blocked_until.is_some_and(|until| until > now)
+                                });
+                            }
+                            let directory = maintenance_state.save_dir.read().await.clone();
+                            cleanup_stale_uploads(&directory).await;
+                        }
+                    }
+                }
+            });
+
             let status = state.server_status.clone();
+            let server_shutdown = state.server_shutdown.clone();
             let app = Router::new()
                 .route("/", get(serve_ui))
                 .route("/mobile.js", get(serve_mobile_js))
@@ -1090,7 +1182,9 @@ fn start_local_server(state: AppState) {
             if let Err(error) = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<SocketAddr>(),
-            ).await {
+            ).with_graceful_shutdown(async move {
+                server_shutdown.cancelled().await;
+            }).await {
                 let message = format!("El servidor local se ha detenido: {}", error);
                 eprintln!("AetherDrop: {}", message);
                 *status.write().await = ServerStatus::Failed(message);
@@ -1115,16 +1209,28 @@ pub fn run() {
         upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
         download_tickets: Arc::new(RwLock::new(HashMap::new())),
         server_status: Arc::new(RwLock::new(ServerStatus::Starting)),
+        server_shutdown: CancellationToken::new(),
         mdns_daemon: Arc::new(std::sync::Mutex::new(None)),
     };
 
     start_local_server(state.clone());
+    let shutdown_token = state.server_shutdown.clone();
+    let mdns_daemon = state.mdns_daemon.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(state)
+        .on_window_event(move |_window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed) {
+                shutdown_token.cancel();
+                let daemon = mdns_daemon.lock().ok().and_then(|slot| slot.as_ref().cloned());
+                if let Some(daemon) = daemon {
+                    let _ = daemon.shutdown();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_connection_info,
             set_save_directory,
