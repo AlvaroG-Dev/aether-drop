@@ -207,8 +207,26 @@
                             message: await responseError(response, 'No se pudo consultar el estado de la transferencia.')
                         };
                     }
-                    try { return { ok: true, status: await response.json() }; }
-                    catch (_) { return { ok: false, message: 'El servidor devolvió un estado de transferencia no válido.' }; }
+                    try {
+                        const status = await response.json();
+                        return {
+                            ok: true,
+                            status,
+                            completedReceipt: status && status.completed_receipt ? status.completed_receipt : null
+                        };
+                    } catch (_) {
+                        return { ok: false, message: 'El servidor devolvió un estado de transferencia no válido.' };
+                    }
+                }
+
+                async function hashFileSha256(file) {
+                    const hasher = window.sha256.create();
+                    const chunkSize = 8 * 1024 * 1024;
+                    for (let offset = 0; offset < file.size; offset += chunkSize) {
+                        const buffer = await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer();
+                        hasher.update(new Uint8Array(buffer));
+                    }
+                    return hasher.hex();
                 }
 
                 async function getOrStartUpload(file, storageKey) {
@@ -220,6 +238,9 @@
                         saved.device_id === deviceId) {
                         const status = await getUploadStatus(saved.transfer_id);
                         if (status.revoked) return { revoked: true, message: status.message };
+                        if (status.ok && status.completedReceipt) {
+                            return { ok: true, completedReceipt: status.completedReceipt, storageKey, resumed: true };
+                        }
                         if (status.ok && status.status.filename === file.name &&
                             Number(status.status.size_bytes) === file.size) {
                             return { ok: true, transferId: saved.transfer_id, status: status.status, storageKey, resumed: true };
@@ -517,15 +538,32 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ sha256: expectedSha256 })
                     };
-                    let response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), finishOptions);
+                    let response;
+                    try {
+                        response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), finishOptions);
+                    } catch (_) {
+                        // A lost response is ambiguous: query the server before treating
+                        // the upload as failed, and retry finalization only if still pending.
+                        const status = await getUploadStatus(transferId);
+                        if (status.revoked) return { revoked: true, message: status.message };
+                        if (status.completedReceipt) return { ok: true, receipt: status.completedReceipt };
+                        if (status.ok && Number(status.status.received_bytes) === Number(status.status.size_bytes)) {
+                            try {
+                                response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), finishOptions);
+                            } catch (_) {
+                                return { ok: false, message: 'Se perdió la respuesta al finalizar. Vuelve a seleccionar el archivo para recuperar el recibo.' };
+                            }
+                        } else {
+                            return { ok: false, message: status.message || 'No se pudo confirmar la finalización de la transferencia.' };
+                        }
+                    }
                     if (response.status === 401) {
                         return { revoked: true, message: 'La sesión se ha revocado.' };
                     }
                     if (!response.ok && response.status === 409) {
-                        // A lost chunk response is recovered through status. If the
-                        // server still says incomplete, do not claim completion.
                         const status = await getUploadStatus(transferId);
                         if (status.revoked) return { revoked: true, message: status.message };
+                        if (status.completedReceipt) return { ok: true, receipt: status.completedReceipt };
                         if (status.ok && Number(status.status.received_bytes) === Number(status.status.size_bytes)) {
                             response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), finishOptions);
                         }
@@ -633,6 +671,20 @@
                                 const started = await getOrStartUpload(file, storageKey);
                                 if (started.revoked || revocationHandled) break;
                                 if (!started.ok) throw new Error(started.message || 'No se pudo iniciar la transferencia.');
+                                if (started.completedReceipt) {
+                                    const receipt = started.completedReceipt;
+                                    if (receipt.filename !== file.name ||
+                                        Number(receipt.size_bytes) !== file.size ||
+                                        !/^[a-f0-9]{64}$/.test(receipt.sha256) ||
+                                        await hashFileSha256(file) !== receipt.sha256) {
+                                        throw new Error('El archivo seleccionado no coincide con el recibo de la transferencia anterior.');
+                                    }
+                                    try { localStorage.removeItem(storageKey); } catch (_) {}
+                                    sentFiles++;
+                                    completedBytes += file.size;
+                                    setProgress(completedBytes);
+                                    continue;
+                                }
                                 transferId = started.transferId;
                                 activeTransferId = transferId;
                                 let status = started.status;
