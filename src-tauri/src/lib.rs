@@ -69,6 +69,7 @@ struct AuthFailureState {
 
 enum PublishError {
     Unauthorized,
+    Cancelled,
     ShuttingDown,
     Io(std::io::Error),
 }
@@ -946,11 +947,12 @@ async fn publish_temp_no_replace(temp_path: &Path, destination: &Path) -> std::i
 async fn publish_temp_for_session(
     state: &AppState,
     session: &AuthorizedSession,
+    transfer_cancellation: &CancellationToken,
     temp_path: &Path,
     destination: &Path,
 ) -> Result<(), PublishError> {
     // Hold read locks through the atomic publication. Revocation takes write locks,
-    // so either the publication completes first or the revoked device cannot publish.
+    // so either the publication linearizes first or the revoked device cannot publish.
     let trusted_devices = state.trusted_devices.read().await;
     let sessions = state.session_tokens.read().await;
     let valid = sessions.get(&session.token).is_some_and(|record| {
@@ -959,22 +961,36 @@ async fn publish_temp_for_session(
             && !record.cancellation.is_cancelled()
     }) && trusted_devices.contains(&session.device_id)
         && !session.cancellation.is_cancelled()
+        && !transfer_cancellation.is_cancelled()
         && session.expires_at > Instant::now();
     if !valid {
-        return Err(PublishError::Unauthorized);
+        return Err(if transfer_cancellation.is_cancelled() {
+            PublishError::Cancelled
+        } else {
+            PublishError::Unauthorized
+        });
     }
 
+    // The hard-link creation is the commit point. Cancellation before it wins;
+    // after it succeeds, the complete final file exists atomically and cleanup is
+    // best-effort. Do not cancel between publication and temporary-link cleanup.
     tokio::select! {
         biased;
-        _ = state.server_shutdown.cancelled() => Err(PublishError::ShuttingDown),
-        _ = session.cancellation.cancelled() => Err(PublishError::Unauthorized),
+        _ = state.server_shutdown.cancelled() => return Err(PublishError::ShuttingDown),
+        _ = transfer_cancellation.cancelled() => return Err(PublishError::Cancelled),
+        _ = session.cancellation.cancelled() => return Err(PublishError::Unauthorized),
         _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
-            Err(PublishError::Unauthorized)
+            return Err(PublishError::Unauthorized);
         }
-        result = publish_temp_no_replace(temp_path, destination) => {
-            result.map_err(PublishError::Io)
+        result = tokio::fs::hard_link(temp_path, destination) => {
+            result.map_err(PublishError::Io)?;
         }
     }
+
+    if let Err(error) = tokio::fs::remove_file(temp_path).await {
+        eprintln!("AetherDrop: no se pudo retirar el temporal {:?}: {}", temp_path, error);
+    }
+    Ok(())
 }
 
 async fn session_is_authorized(state: &AppState, session: &AuthorizedSession) -> bool {
@@ -1395,7 +1411,13 @@ async fn finish_chunked_upload(
 
         let destination_directory = upload.temp_path.parent().unwrap_or_else(|| Path::new("."));
         let destination_path = destination_directory.join(&upload.filename);
-        match publish_temp_for_session(&state, &session, &upload.temp_path, &destination_path).await {
+        match publish_temp_for_session(
+            &state,
+            &session,
+            &handle.cancellation,
+            &upload.temp_path,
+            &destination_path,
+        ).await {
             Ok(()) => Ok(UploadReceipt {
                 filename: upload.filename.clone(),
                 size_bytes: upload.expected_size,
@@ -1405,6 +1427,7 @@ async fn finish_chunked_upload(
                 Err((StatusCode::CONFLICT, "Ya existe un archivo con ese nombre. Cambia el nombre y vuelve a intentarlo."))
             }
             Err(PublishError::Unauthorized) => Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado o la sesión ha caducado.")),
+            Err(PublishError::Cancelled) => Err((StatusCode::CONFLICT, "La transferencia se ha cancelado antes de publicar el archivo.")),
             Err(PublishError::ShuttingDown) => Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando.")),
             Err(PublishError::Io(_)) => Err((StatusCode::INTERNAL_SERVER_ERROR, "El sistema de archivos no permite publicar el archivo de forma atómica.")),
         }
