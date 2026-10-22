@@ -73,6 +73,13 @@ struct UploadResponse {
 }
 
 #[derive(Clone)]
+enum ServerStatus {
+    Starting,
+    Ready,
+    Failed(String),
+}
+
+#[derive(Clone)]
 struct AppState {
     save_dir: Arc<RwLock<PathBuf>>,
     pc_files: Arc<RwLock<Vec<(String, PathBuf)>>>,
@@ -82,6 +89,8 @@ struct AppState {
     session_tokens: Arc<RwLock<HashMap<String, SessionRecord>>>,
     auth_failures: Arc<RwLock<HashMap<IpAddr, AuthFailureState>>>,
     upload_slots: Arc<Semaphore>,
+    server_status: Arc<RwLock<ServerStatus>>,
+    mdns_daemon: Arc<std::sync::Mutex<Option<ServiceDaemon>>>,
 }
 
 #[derive(Serialize)]
@@ -105,7 +114,18 @@ struct ClipboardRequest {
 
 #[tauri::command]
 async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<ConnectionInfo, String> {
-    let my_ip = local_ip().map_err(|e| e.to_string())?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match state.server_status.read().await.clone() {
+                ServerStatus::Ready => return Ok(()),
+                ServerStatus::Failed(message) => return Err(message),
+                ServerStatus::Starting => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+    }).await
+        .map_err(|_| "El servidor local sigue iniciándose. Vuelve a intentarlo.".to_owned())??;
+
+    let my_ip = local_ip().map_err(|e| format!("No se pudo detectar una dirección de red: {}", e))?;
     let host = match my_ip {
         IpAddr::V4(address) => address.to_string(),
         IpAddr::V6(address) => format!("[{}]", address),
@@ -823,7 +843,15 @@ fn content_disposition_value(filename: &str) -> String {
 
 #[cfg(test)]
 mod upload_filename_tests {
-    use super::{content_disposition_value, sanitize_upload_filename};
+    use super::{
+        auth_rate_limited, content_disposition_value, record_auth_failure,
+        sanitize_upload_filename, AuthFailureState, MAX_AUTH_FAILURES,
+    };
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+    use std::str::FromStr;
+    use std::time::Instant;
 
     #[test]
     fn strips_unix_and_windows_path_components() {
@@ -846,6 +874,30 @@ mod upload_filename_tests {
         let value = content_disposition_value("foto ñ.png");
         assert!(value.starts_with("attachment; filename=\"foto _.png\"; filename*=UTF-8''"));
         assert!(value.contains("%C3%B1"));
+    }
+
+    #[test]
+    fn sha256_matches_the_standard_known_vector() {
+        let digest = format!("{:x}", Sha256::digest(b"abc"));
+        assert_eq!(
+            digest,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn auth_rate_limit_is_scoped_to_each_ip() {
+        let mut failures = HashMap::<IpAddr, AuthFailureState>::new();
+        let first = IpAddr::from_str("192.0.2.10").unwrap();
+        let second = IpAddr::from_str("192.0.2.11").unwrap();
+        let now = Instant::now();
+
+        for _ in 1..MAX_AUTH_FAILURES {
+            assert!(!record_auth_failure(&mut failures, first, now));
+        }
+        assert!(record_auth_failure(&mut failures, first, now));
+        assert!(auth_rate_limited(&mut failures, first, now));
+        assert!(!auth_rate_limited(&mut failures, second, now));
     }
 }
 
@@ -1097,24 +1149,73 @@ async fn set_clipboard(
 }
 
 fn start_local_server(state: AppState) {
-    std::thread::spawn(|| {
-        if let Ok(daemon) = ServiceDaemon::new() {
-            let ip = local_ip().unwrap_or_else(|_| "127.0.0.1".parse().unwrap());
-            let service_info = ServiceInfo::new(
-                "_aetherdrop._tcp.local.",
-                "AetherDropPC",
-                "aetherdrop.local.",
-                ip.to_string().as_str(),
-                8080,
-                None,
-            ).unwrap();
-            let _ = daemon.register(service_info);
+    let mdns_state = state.clone();
+    std::thread::spawn(move || {
+        let daemon = match ServiceDaemon::new() {
+            Ok(daemon) => daemon,
+            Err(error) => {
+                eprintln!("AetherDrop: mDNS no disponible: {}", error);
+                return;
+            }
+        };
+        let ip = match local_ip() {
+            Ok(ip) => ip,
+            Err(error) => {
+                eprintln!("AetherDrop: no se pudo anunciar mDNS: {}", error);
+                return;
+            }
+        };
+        let ip_string = ip.to_string();
+        let service_info = match ServiceInfo::new(
+            "_aetherdrop._tcp.local.",
+            "AetherDropPC",
+            "aetherdrop.local.",
+            ip_string.as_str(),
+            8080,
+            None,
+        ) {
+            Ok(service_info) => service_info,
+            Err(error) => {
+                eprintln!("AetherDrop: anuncio mDNS no válido: {}", error);
+                return;
+            }
+        };
+        match daemon.register(service_info) {
+            Ok(()) => {
+                if let Ok(mut slot) = mdns_state.mdns_daemon.lock() {
+                    *slot = Some(daemon);
+                }
+            }
+            Err(error) => eprintln!("AetherDrop: no se pudo registrar mDNS: {}", error),
         }
     });
 
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("aetherdrop-http")
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("AetherDrop: no se pudo crear el runtime HTTP: {}", error);
+                return;
+            }
+        };
+        runtime.block_on(async move {
+            let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+            let listener = match tokio::net::TcpListener::bind(&addr).await {
+                Ok(listener) => listener,
+                Err(error) => {
+                    let message = format!("No se pudo abrir el puerto 8080: {}", error);
+                    eprintln!("AetherDrop: {}", message);
+                    *state.server_status.write().await = ServerStatus::Failed(message);
+                    return;
+                }
+            };
+
+            *state.server_status.write().await = ServerStatus::Ready;
+            let status = state.server_status.clone();
             let app = Router::new()
                 .route("/", get(serve_ui))
                 .route("/auth", post(handle_auth))
@@ -1125,11 +1226,16 @@ fn start_local_server(state: AppState) {
                 .route("/clipboard", get(get_clipboard).post(set_clipboard))
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
                 .with_state(state)
-                .layer(DefaultBodyLimit::max(2 * 1024 * 1024 * 1024));
+                .layer(DefaultBodyLimit::max(MAX_UPLOAD_REQUEST_BYTES));
 
-            let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            let _ = axum::serve(listener, app).await;
+            if let Err(error) = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            ).await {
+                let message = format!("El servidor local se ha detenido: {}", error);
+                eprintln!("AetherDrop: {}", message);
+                *status.write().await = ServerStatus::Failed(message);
+            }
         });
     });
 }
@@ -1146,7 +1252,10 @@ pub fn run() {
         trusted_devices: Arc::new(RwLock::new(Vec::new())),
         clipboard_text: Arc::new(RwLock::new(String::new())),
         session_tokens: Arc::new(RwLock::new(HashMap::new())),
-        auth_failures: Arc::new(RwLock::new((0, std::time::Instant::now()))),
+        auth_failures: Arc::new(RwLock::new(HashMap::new())),
+        upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+        server_status: Arc::new(RwLock::new(ServerStatus::Starting)),
+        mdns_daemon: Arc::new(std::sync::Mutex::new(None)),
     };
 
     start_local_server(state.clone());
