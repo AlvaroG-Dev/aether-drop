@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
+use futures_util::TryStreamExt;
 use local_ip_address::local_ip;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -1148,6 +1149,7 @@ async fn create_download_ticket(
     Ok(Json(DownloadTicketResponse { ticket, expires_in: 60 }))
 }
 
+#[cfg(test)]
 async fn publish_temp_no_replace(temp_path: &Path, destination: &Path) -> std::io::Result<()> {
     tokio::fs::hard_link(temp_path, destination).await?;
     // Publication already succeeded. A cleanup failure leaves only a hidden .part
