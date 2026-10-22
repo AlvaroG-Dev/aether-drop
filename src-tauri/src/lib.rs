@@ -205,10 +205,18 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
     }).await
         .map_err(|_| "El servidor local sigue iniciándose. Vuelve a intentarlo.".to_owned())??;
 
-    let my_ip = local_ip().map_err(|e| format!("No se pudo detectar una dirección de red: {}", e))?;
+    let my_ip = local_ip().map_err(|error| format!("No se pudo detectar una dirección de red: {}", error))?;
+    if my_ip.is_loopback() || my_ip.is_unspecified() {
+        return Err("No se ha detectado una dirección de red LAN válida. Conecta el ordenador a la red y vuelve a intentarlo.".to_owned());
+    }
     let host = match my_ip {
         IpAddr::V4(address) => address.to_string(),
-        IpAddr::V6(address) => format!("[{}]", address),
+        IpAddr::V6(address) => {
+            return Err(format!(
+                "La dirección local detectada es IPv6 ({}), pero el servidor de este prototipo está enlazado a IPv4. Conecta el ordenador a una red con IPv4 para vincular el móvil.",
+                address
+            ));
+        }
     };
     let url = format!("http://{}:8080", host);
 
@@ -1694,7 +1702,23 @@ async fn download_pc_file(
     let Some(path) = path else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let file = match tokio::fs::File::open(&path).await {
+    let path_metadata = match tokio::fs::symlink_metadata(&path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let canonical_path = match tokio::fs::canonicalize(&path).await {
+        Ok(canonical_path) => canonical_path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if canonical_path != path {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let file = match tokio::fs::File::open(&canonical_path).await {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1724,6 +1748,7 @@ async fn download_pc_file(
         .header("Content-Type", "application/octet-stream")
         .header("Content-Length", metadata.len().to_string())
         .header("X-Content-Type-Options", "nosniff")
+        .header("Cache-Control", "no-store")
         .body(axum::body::Body::from_stream(stream))
     {
         Ok(response) => response,
@@ -1854,7 +1879,11 @@ fn start_local_server(state: AppState) {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                eprintln!("AetherDrop: no se pudo crear el runtime HTTP: {}", error);
+                let message = format!("No se pudo crear el runtime HTTP: {}", error);
+                eprintln!("AetherDrop: {}", message);
+                if let Ok(mut status) = state.server_status.try_write() {
+                    *status = ServerStatus::Failed(message);
+                }
                 return;
             }
         };
