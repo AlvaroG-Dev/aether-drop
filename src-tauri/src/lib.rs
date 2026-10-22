@@ -1157,7 +1157,23 @@ mod upload_filename_tests {
     #[tokio::test]
     async fn re_pairing_rotates_the_session_and_cancels_the_previous_token() {
         let directory = test_directory().await;
-        let (state, _session) = test_state(directory.clone());
+        let (state, session) = test_state(directory.clone());
+        let Json(pending_transfer) = start_chunked_upload(
+            State(state.clone()),
+            Extension(session),
+            Json(UploadStartRequest {
+                filename: "resume-after-pairing.bin".to_owned(),
+                size_bytes: 128,
+            }),
+        )
+        .await
+        .unwrap();
+        let temp_path = {
+            let handle = state.pending_uploads.read().await
+                .get(&pending_transfer.transfer_id).cloned().unwrap();
+            let path = handle.inner.lock().await.temp_path.clone();
+            path
+        };
         let old_cancellation = state.session_tokens.read().await
             .get("test-session-token")
             .unwrap()
@@ -1185,6 +1201,9 @@ mod upload_filename_tests {
         assert_eq!(sessions.len(), 1);
         assert!(sessions.contains_key(new_token));
         drop(sessions);
+        assert!(state.pending_uploads.read().await.is_empty());
+        assert_eq!(state.reserved_upload_bytes.load(Ordering::Acquire), 0);
+        assert!(!tokio::fs::try_exists(&temp_path).await.unwrap());
         tokio::fs::remove_dir_all(&directory).await.unwrap();
     }
 
