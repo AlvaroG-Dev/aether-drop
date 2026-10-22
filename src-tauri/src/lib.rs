@@ -1,5 +1,5 @@
 use axum::{
-
+    extract::{ConnectInfo, DefaultBodyLimit, Extension, Path as AxumPath, State},
     middleware::{self, Next},
     http::{Request, StatusCode},
     response::IntoResponse,
@@ -907,7 +907,7 @@ mod upload_filename_tests {
 async fn create_download_ticket(
     State(state): State<AppState>,
     Extension(session): Extension<AuthorizedSession>,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
 ) -> Result<Json<DownloadTicketResponse>, (StatusCode, &'static str)> {
     if !session_is_authorized(&state, &session).await {
         return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
@@ -1156,7 +1156,7 @@ async fn start_chunked_upload(
 async fn chunked_upload_status(
     State(state): State<AppState>,
     Extension(session): Extension<AuthorizedSession>,
-    Path(transfer_id): Path<String>,
+    AxumPath(transfer_id): AxumPath<String>,
 ) -> Result<Json<UploadProgressResponse>, (StatusCode, &'static str)> {
     let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
         .ok_or((StatusCode::NOT_FOUND, "La transferencia pendiente no existe o ha caducado."))?;
@@ -1194,7 +1194,7 @@ async fn chunked_upload_status(
 async fn upload_chunk(
     State(state): State<AppState>,
     Extension(session): Extension<AuthorizedSession>,
-    Path((transfer_id, chunk_index)): Path<(String, u64)>,
+    AxumPath((transfer_id, chunk_index)): AxumPath<(String, u64)>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<UploadProgressResponse>, (StatusCode, &'static str)> {
@@ -1303,7 +1303,7 @@ async fn upload_chunk(
 async fn finish_chunked_upload(
     State(state): State<AppState>,
     Extension(session): Extension<AuthorizedSession>,
-    Path(transfer_id): Path<String>,
+    AxumPath(transfer_id): AxumPath<String>,
 ) -> Result<Json<UploadResponse>, (StatusCode, &'static str)> {
     let _permit = state.upload_slots.clone().try_acquire_owned()
         .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Hay demasiadas operaciones de transferencia simultáneas."))?;
@@ -1427,7 +1427,7 @@ async fn finish_chunked_upload(
 async fn cancel_chunked_upload(
     State(state): State<AppState>,
     Extension(session): Extension<AuthorizedSession>,
-    Path(transfer_id): Path<String>,
+    AxumPath(transfer_id): AxumPath<String>,
 ) -> StatusCode {
     let handle = state.pending_uploads.read().await.get(&transfer_id).cloned();
     let Some(handle) = handle else {
@@ -1456,7 +1456,7 @@ async fn list_pc_files(State(state): State<AppState>) -> Json<Vec<serde_json::Va
 async fn download_pc_file(
     State(state): State<AppState>,
     Extension(session): Extension<AuthorizedSession>,
-    Path(id): Path<String>,
+    AxumPath(id): AxumPath<String>,
 ) -> axum::response::Response {
     // Release the shared file-list lock before opening/streaming the file.
     let path = {
