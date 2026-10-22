@@ -22,9 +22,9 @@ AetherDrop es un prototipo de escritorio construido con Rust + Tauri 2 y Axum. E
 
 ### Límites actuales
 - Máximo de 2 GiB por archivo.
-- Bloques de 8 MiB y hasta tres peticiones de transferencia/escritura concurrentes.
-- Máximo de 24 transferencias pendientes en el servidor.
-- El cliente permite elegir hasta 32 archivos en una selección; se transfieren secuencialmente y se comunica el resultado individual/partial.
+- Bloques de 8 MiB, hasta tres escrituras de bloques simultáneas y hasta tres descargas simultáneas.
+- Máximo de 24 transferencias pendientes en el servidor y cuatro pendientes por dispositivo.
+- El cliente permite elegir hasta 32 archivos en una selección; se transfieren secuencialmente y se comunica el resultado individual y las transferencias parciales.
 - Máximo de 256 archivos en la lista «Archivos para enviar».
 - Portapapeles limitado a 1 MiB de texto.
 - Las peticiones de autenticación tienen limitación de intentos por IP y los bloqueos y sesiones caducadas se limpian periódicamente.
