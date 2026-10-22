@@ -73,6 +73,20 @@ struct UploadResponse {
 }
 
 #[derive(Clone)]
+struct DownloadTicket {
+    file_id: String,
+    session_token: String,
+    device_id: String,
+    expires_at: Instant,
+}
+
+#[derive(Serialize)]
+struct DownloadTicketResponse {
+    ticket: String,
+    expires_in: u64,
+}
+
+#[derive(Clone)]
 enum ServerStatus {
     Starting,
     Ready,
@@ -89,6 +103,7 @@ struct AppState {
     session_tokens: Arc<RwLock<HashMap<String, SessionRecord>>>,
     auth_failures: Arc<RwLock<HashMap<IpAddr, AuthFailureState>>>,
     upload_slots: Arc<Semaphore>,
+    download_tickets: Arc<RwLock<HashMap<String, DownloadTicket>>>,
     server_status: Arc<RwLock<ServerStatus>>,
     mdns_daemon: Arc<std::sync::Mutex<Option<ServiceDaemon>>>,
 }
@@ -767,6 +782,43 @@ fn record_auth_failure(
     entry.blocked_until.is_some_and(|until| until > now)
 }
 
+fn ticket_from_query(query: Option<&str>) -> Option<String> {
+    query?.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == "ticket" && !value.is_empty() && value.len() <= 128)
+            .then(|| value.to_owned())
+    })
+}
+
+async fn session_from_download_ticket(
+    state: &AppState,
+    requested_file_id: &str,
+    ticket_token: &str,
+) -> Option<AuthorizedSession> {
+    let ticket = {
+        let mut tickets = state.download_tickets.write().await;
+        let now = Instant::now();
+        tickets.retain(|_, ticket| ticket.expires_at > now);
+        tickets.remove(ticket_token)?
+    };
+    if ticket.expires_at <= Instant::now() || ticket.file_id != requested_file_id {
+        return None;
+    }
+    let record = state.session_tokens.read().await.get(&ticket.session_token).cloned()?;
+    if record.expires_at <= Instant::now()
+        || record.device_id != ticket.device_id
+        || record.cancellation.is_cancelled()
+        || !state.trusted_devices.read().await.contains(&ticket.device_id)
+    {
+        return None;
+    }
+    Some(AuthorizedSession {
+        token: ticket.session_token,
+        device_id: record.device_id,
+        cancellation: record.cancellation,
+    })
+}
+
 async fn require_auth(
     mut request: Request<axum::body::Body>,
     State(state): State<AppState>,
@@ -775,15 +827,24 @@ async fn require_auth(
     if request.uri().path() == "/" || request.uri().path() == "/auth" {
         return next.run(request).await;
     }
-    let Some(token) = request.headers()
+    let bearer_token = request.headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::to_owned)
-    else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
+        .map(str::to_owned);
 
+    if bearer_token.is_none() {
+        if let Some(file_id) = request.uri().path().strip_prefix("/download/") {
+            if let Some(ticket) = ticket_from_query(request.uri().query()) {
+                if let Some(session) = session_from_download_ticket(&state, file_id, &ticket).await {
+                    request.extensions_mut().insert(session);
+                    return next.run(request).await;
+                }
+            }
+        }
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let token = bearer_token.expect("checked above");
     let session = state.session_tokens.read().await.get(&token).cloned();
     let Some(session) = session else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -966,6 +1027,35 @@ mod upload_filename_tests {
 
 // Uploaded files are staged beside their destination, synced, read back and
 // SHA-256-verified, then atomically published without overwriting an existing file.
+async fn create_download_ticket(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthorizedSession>,
+    Path(id): Path<String>,
+) -> Result<Json<DownloadTicketResponse>, (StatusCode, &'static str)> {
+    if !session_is_authorized(&state, &session).await {
+        return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
+    }
+    let exists = state.pc_files.read().await.iter().any(|(file_id, _)| file_id == &id);
+    if !exists {
+        return Err((StatusCode::NOT_FOUND, "El archivo ya no está disponible."));
+    }
+
+    let ticket = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let now = Instant::now();
+    let mut tickets = state.download_tickets.write().await;
+    tickets.retain(|_, entry| entry.expires_at > now);
+    if tickets.len() >= 512 {
+        return Err((StatusCode::TOO_MANY_REQUESTS, "Hay demasiadas descargas pendientes. Inténtalo de nuevo."));
+    }
+    tickets.insert(ticket.clone(), DownloadTicket {
+        file_id: id,
+        session_token: session.token,
+        device_id: session.device_id,
+        expires_at: now + Duration::from_secs(60),
+    });
+    Ok(Json(DownloadTicketResponse { ticket, expires_in: 60 }))
+}
+
 async fn session_is_authorized(state: &AppState, session: &AuthorizedSession) -> bool {
     if session.cancellation.is_cancelled() {
         return false;
@@ -1285,6 +1375,7 @@ fn start_local_server(state: AppState) {
                 .route("/session", get(check_session))
                 .route("/upload", post(handle_upload))
                 .route("/files", get(list_pc_files))
+                .route("/download-ticket/:id", post(create_download_ticket))
                 .route("/download/:id", get(download_pc_file))
                 .route("/clipboard", get(get_clipboard).post(set_clipboard))
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
@@ -1317,6 +1408,7 @@ pub fn run() {
         session_tokens: Arc::new(RwLock::new(HashMap::new())),
         auth_failures: Arc::new(RwLock::new(HashMap::new())),
         upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+        download_tickets: Arc::new(RwLock::new(HashMap::new())),
         server_status: Arc::new(RwLock::new(ServerStatus::Starting)),
         mdns_daemon: Arc::new(std::sync::Mutex::new(None)),
     };
