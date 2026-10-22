@@ -234,7 +234,8 @@
                             received_bytes: 0,
                             next_chunk: Number(data.next_chunk) || 0,
                             chunks_total: Number(data.chunks_total),
-                            chunk_size: Number(data.chunk_size)
+                            chunk_size: Number(data.chunk_size),
+                            chunk_hashes: []
                         },
                         storageKey,
                         resumed: false
@@ -301,20 +302,49 @@
 
                 async function transferFileInChunks(file, transferId, status, totalBytes, completedBytes) {
                     const chunkSize = Number(status.chunk_size);
+                    if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) {
+                        return { ok: false, status: 500, message: 'El tamaño de bloque del servidor no es válido.' };
+                    }
                     let current = status;
                     let failedAttempts = 0;
+                    const wholeFileHasher = window.sha256.create();
+
+                    // Revalidate every already-committed block against the currently
+                    // selected File before resuming. Matching names/sizes/timestamps
+                    // are not enough to prove it is the same content.
+                    const committedChunks = Number(current.next_chunk) || 0;
+                    const committedHashes = Array.isArray(current.chunk_hashes) ? current.chunk_hashes : [];
+                    if (committedHashes.length !== committedChunks) {
+                        return { ok: false, status: 409, message: 'El servidor no tiene un historial de hashes coherente. Cancela esa transferencia e inicia otra.' };
+                    }
+                    for (let i = 0; i < committedChunks; i++) {
+                        if (cancelRequested) return { cancelled: true, progress: current };
+                        if (revocationHandled) return { revoked: true, progress: current };
+                        const offset = i * chunkSize;
+                        const buffer = await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer();
+                        const view = new Uint8Array(buffer);
+                        const localHash = window.sha256(view);
+                        if (localHash !== committedHashes[i]) {
+                            return {
+                                ok: false,
+                                status: 409,
+                                message: 'El contenido del archivo seleccionado no coincide con los bloques ya recibidos. Cancela esa transferencia y vuelve a empezar.'
+                            };
+                        }
+                        wholeFileHasher.update(view);
+                    }
+
                     while (Number(current.next_chunk) < Number(current.chunks_total)) {
                         if (cancelRequested) return { cancelled: true, progress: current };
                         if (revocationHandled) return { revoked: true, progress: current };
                         const chunkIndex = Number(current.next_chunk);
                         const offset = chunkIndex * chunkSize;
-                        const blob = file.slice(offset, Math.min(file.size, offset + chunkSize));
-                        const buffer = await blob.arrayBuffer();
-                        // js-sha256 is vendored under its MIT license because browsers
-                        // do not expose SubtleCrypto on ordinary HTTP LAN IP origins.
-                        const chunkHash = window.sha256(new Uint8Array(buffer));
+                        const buffer = await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer();
+                        const view = new Uint8Array(buffer);
+                        const chunkHash = window.sha256(view);
                         if (cancelRequested) return { cancelled: true, progress: current };
-                        let response = await postUploadChunk(
+
+                        const response = await postUploadChunk(
                             transferId,
                             chunkIndex,
                             buffer,
@@ -328,10 +358,18 @@
                                 document.getElementById('progressPercent').innerText = percent + '%';
                             }
                         );
-                        if (response.cancelled) return { cancelled: true, progress: current };
-                        if (response.revoked) return { revoked: true, message: response.message };
+                        if (response.cancelled || cancelRequested) return { cancelled: true, progress: current };
+                        if (response.revoked || revocationHandled) return { revoked: true, message: response.message };
+
                         if (response.ok) {
-                            current = response.progress;
+                            const received = response.progress;
+                            if (!Array.isArray(received.chunk_hashes) ||
+                                received.chunk_hashes[chunkIndex] !== chunkHash ||
+                                Number(received.next_chunk) !== chunkIndex + 1) {
+                                return { ok: false, status: 500, message: 'El servidor no confirmó el hash del bloque recibido.' };
+                            }
+                            current = received;
+                            wholeFileHasher.update(view);
                             failedAttempts = 0;
                             continue;
                         }
@@ -340,15 +378,30 @@
                             const refreshed = await getUploadStatus(transferId);
                             if (refreshed.revoked) return { revoked: true, message: refreshed.message };
                             if (refreshed.ok) {
-                                current = refreshed.status;
-                                if (Number(current.next_chunk) > chunkIndex) {
+                                const latest = refreshed.status;
+                                const nextIndex = Number(latest.next_chunk);
+                                if (nextIndex > chunkIndex) {
+                                    if (!Array.isArray(latest.chunk_hashes) ||
+                                        latest.chunk_hashes[chunkIndex] !== chunkHash) {
+                                        return {
+                                            ok: false,
+                                            status: 409,
+                                            message: 'El PC confirma un bloque distinto al del archivo seleccionado. Cancela y empieza de nuevo.'
+                                        };
+                                    }
+                                    wholeFileHasher.update(view);
+                                    current = latest;
                                     failedAttempts = 0;
                                     continue;
                                 }
-                                if (Number(current.next_chunk) < chunkIndex) {
-                                    failedAttempts = 0;
-                                    continue;
+                                if (nextIndex < chunkIndex) {
+                                    return {
+                                        ok: false,
+                                        status: 409,
+                                        message: 'El estado de la transferencia retrocedió inesperadamente. Cancela y empieza de nuevo.'
+                                    };
                                 }
+                                current = latest;
                             }
                             if (failedAttempts < 3 && !cancelRequested && !revocationHandled) {
                                 await new Promise(resolve => setTimeout(resolve, 350 * (2 ** failedAttempts)));
@@ -356,6 +409,7 @@
                                 continue;
                             }
                         }
+
                         return {
                             ok: false,
                             status: response.status,
@@ -364,7 +418,7 @@
                             retryable: response.retryable
                         };
                     }
-                    return { ok: true, progress: current };
+                    return { ok: true, progress: current, sha256: wholeFileHasher.hex() };
                 }
 
                 async function finalizeUpload(transferId) {
@@ -512,7 +566,8 @@
                                 const receipt = finished.receipt;
                                 if (receipt.filename !== file.name ||
                                     Number(receipt.size_bytes) !== file.size ||
-                                    !/^[a-f0-9]{64}$/.test(receipt.sha256)) {
+                                    !/^[a-f0-9]{64}$/.test(receipt.sha256) ||
+                                    receipt.sha256 !== chunks.sha256) {
                                     await cancelPendingUpload(transferId, storageKey);
                                     throw new Error('La respuesta de integridad del servidor no coincide con el archivo.');
                                 }
