@@ -648,65 +648,128 @@ async fn serve_ui() -> axum::response::Html<&'static str> {
 }
 
 
+fn auth_rate_limited(failures: &mut HashMap<IpAddr, AuthFailureState>, ip: IpAddr, now: Instant) -> bool {
+    failures.retain(|_, entry| {
+        entry.window_started.elapsed() < AUTH_FAILURE_WINDOW
+            || entry.blocked_until.is_some_and(|until| until > now)
+    });
+    failures
+        .get(&ip)
+        .and_then(|entry| entry.blocked_until)
+        .is_some_and(|until| until > now)
+}
+
+fn record_auth_failure(
+    failures: &mut HashMap<IpAddr, AuthFailureState>,
+    ip: IpAddr,
+    now: Instant,
+) -> bool {
+    if !failures.contains_key(&ip) && failures.len() >= MAX_TRACKED_AUTH_IPS {
+        return true;
+    }
+    let entry = failures.entry(ip).or_insert(AuthFailureState {
+        window_started: now,
+        attempts: 0,
+        blocked_until: None,
+    });
+    if now.duration_since(entry.window_started) >= AUTH_FAILURE_WINDOW {
+        entry.window_started = now;
+        entry.attempts = 0;
+        entry.blocked_until = None;
+    }
+    entry.attempts = entry.attempts.saturating_add(1);
+    if entry.attempts >= MAX_AUTH_FAILURES {
+        entry.blocked_until = Some(now + AUTH_BLOCK_DURATION);
+    }
+    entry.blocked_until.is_some_and(|until| until > now)
+}
+
 async fn require_auth(
+    mut request: Request<axum::body::Body>,
     State(state): State<AppState>,
-    request: Request<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
-    // The landing page and PIN exchange are the only unauthenticated routes.
     if request.uri().path() == "/" || request.uri().path() == "/auth" {
         return next.run(request).await;
     }
-    let token = request.headers()
+    let Some(token) = request.headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    // Clone the device ID before checking trust so no session lock is held while
-    // acquiring the trusted-device lock (revocation takes those locks separately).
-    let device_id = if let Some(token) = token {
-        let sessions = state.session_tokens.read().await;
-        sessions.get(token).cloned()
-    } else {
-        None
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::to_owned)
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
     };
-    let authorized = if let Some(device_id) = device_id {
-        state.trusted_devices.read().await.contains(&device_id)
-    } else {
-        false
+
+    let session = state.session_tokens.read().await.get(&token).cloned();
+    let Some(session) = session else {
+        return StatusCode::UNAUTHORIZED.into_response();
     };
-    if !authorized {
+    if session.expires_at <= Instant::now() {
+        session.cancellation.cancel();
+        state.session_tokens.write().await.remove(&token);
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if !state.trusted_devices.read().await.contains(&session.device_id) {
+        session.cancellation.cancel();
+        state.session_tokens.write().await.remove(&token);
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    request.extensions_mut().insert(AuthorizedSession {
+        token,
+        device_id: session.device_id,
+        cancellation: session.cancellation,
+    });
     next.run(request).await
 }
 
 async fn check_session() -> StatusCode { StatusCode::OK }
 
-async fn handle_auth(State(state): State<AppState>, Json(payload): Json<PinRequest>) -> impl IntoResponse {
+async fn handle_auth(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(payload): Json<PinRequest>,
+) -> impl IntoResponse {
+    let now = Instant::now();
     {
         let mut failures = state.auth_failures.write().await;
-        if failures.1.elapsed() >= std::time::Duration::from_secs(60) {
-            *failures = (0, std::time::Instant::now());
+        if auth_rate_limited(&mut failures, peer.ip(), now) {
+            return (StatusCode::TOO_MANY_REQUESTS, "Demasiados intentos de PIN; espera un minuto.").into_response();
         }
-        if failures.0 >= 10 {
-            return (StatusCode::TOO_MANY_REQUESTS, "Too many PIN attempts; wait one minute").into_response();
+        if payload.pin != state.pin
+            || payload.device_id.len() > 64
+            || payload.device_id.is_empty()
+            || !payload.device_id.chars().all(|character| {
+                character.is_ascii_alphanumeric() || character == '_' || character == '-'
+            })
+        {
+            let blocked = record_auth_failure(&mut failures, peer.ip(), now);
+            if blocked {
+                return (StatusCode::TOO_MANY_REQUESTS, "Demasiados intentos de PIN; espera un minuto.").into_response();
+            }
+            return (StatusCode::UNAUTHORIZED, "PIN o identificador del dispositivo no válidos.").into_response();
         }
-        if payload.pin != state.pin || payload.device_id.len() > 64 || payload.device_id.is_empty() || !payload.device_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-            failures.0 += 1;
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
-        failures.0 = 0;
-        failures.1 = std::time::Instant::now();
+        failures.remove(&peer.ip());
     }
-    let mut devices = state.trusted_devices.write().await;
-    if !devices.contains(&payload.device_id) {
-        devices.push(payload.device_id.clone());
+
+    {
+        let mut devices = state.trusted_devices.write().await;
+        if !devices.contains(&payload.device_id) {
+            devices.push(payload.device_id.clone());
+        }
     }
-    drop(devices);
-    // Issue an unguessable bearer token; a client-side boolean is never authentication.
-    let token = uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().to_string();
-    state.session_tokens.write().await.insert(token.clone(), payload.device_id.clone());
-    (StatusCode::OK, Json(serde_json::json!({ "token": token }))).into_response()
+    let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let record = SessionRecord {
+        device_id: payload.device_id,
+        expires_at: now + SESSION_TTL,
+        cancellation: CancellationToken::new(),
+    };
+    state.session_tokens.write().await.insert(token.clone(), record);
+    (StatusCode::OK, Json(serde_json::json!({
+        "token": token,
+        "expires_in": SESSION_TTL.as_secs()
+    }))).into_response()
 }
 
 fn sanitize_upload_filename(input: &str) -> Option<String> {
