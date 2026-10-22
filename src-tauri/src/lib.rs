@@ -1177,7 +1177,7 @@ mod upload_filename_tests {
         let Json(response) = finish_chunked_upload(
             State(state.clone()),
             Extension(session),
-            AxumPath(start.transfer_id),
+            AxumPath(start.transfer_id.clone()),
             Json(UploadFinishRequest {
                 sha256: expected_hash.clone(),
             }),
@@ -1187,6 +1187,16 @@ mod upload_filename_tests {
         assert_eq!(response.files.len(), 1);
         assert_eq!(response.files[0].sha256, expected_hash);
         assert_eq!(response.files[0].size_bytes, data.len() as u64);
+
+        // Simulate the client retrying /finish after the first response was lost.
+        let Json(retried) = finish_chunked_upload(
+            State(state.clone()),
+            Extension(session),
+            AxumPath(start.transfer_id),
+            Json(UploadFinishRequest { sha256: expected_hash.clone() }),
+        ).await.unwrap();
+        assert_eq!(retried.files.len(), 1);
+        assert_eq!(retried.files[0].sha256, expected_hash);
         assert_eq!(tokio::fs::read(directory.join("roundtrip.bin")).await.unwrap(), data);
         assert_eq!(state.reserved_upload_bytes.load(Ordering::Acquire), 0);
         assert!(state.pending_uploads.read().await.is_empty());
