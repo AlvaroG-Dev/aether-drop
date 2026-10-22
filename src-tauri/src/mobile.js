@@ -1,5 +1,7 @@
                 let activeUploadXhr = { current: null };
                 let revocationHandled = false;
+                let fileSyncTimer = null;
+                let clipboardSyncTimer = null;
                 function createDeviceId() {
                     try {
                         const bytes = new Uint8Array(16);
@@ -35,6 +37,7 @@
                 function handleAuthorizationRevoked() {
                     if (revocationHandled) return;
                     revocationHandled = true;
+                    stopSync();
                     localStorage.removeItem('aether_token');
                     const xhr = activeUploadXhr.current;
                     if (xhr && xhr.readyState !== XMLHttpRequest.DONE) {
@@ -728,9 +731,28 @@
                     }
                 }
 
+                function stopSync() {
+                    if (fileSyncTimer !== null) {
+                        clearInterval(fileSyncTimer);
+                        fileSyncTimer = null;
+                    }
+                    if (clipboardSyncTimer !== null) {
+                        clearInterval(clipboardSyncTimer);
+                        clipboardSyncTimer = null;
+                    }
+                }
+
                 function startSync() {
-                    setInterval(fetchFiles, 3000);
-                    setInterval(() => syncClipboard(false), 3000);
+                    if (fileSyncTimer === null) {
+                        fileSyncTimer = setInterval(() => {
+                            if (!revocationHandled && localStorage.getItem('aether_token')) fetchFiles();
+                        }, 3000);
+                    }
+                    if (clipboardSyncTimer === null) {
+                        clipboardSyncTimer = setInterval(() => {
+                            if (!revocationHandled && localStorage.getItem('aether_token')) syncClipboard(false);
+                        }, 3000);
+                    }
                     fetchFiles();
                     syncClipboard(true);
                 }
