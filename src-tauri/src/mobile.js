@@ -165,7 +165,17 @@
 
                 let uploadInProgress = false;
                 let cancelRequested = false;
+                let pauseRequested = false;
                 let activeTransferId = null;
+
+                async function waitWhilePaused(filename) {
+                    while (pauseRequested && !cancelRequested && !revocationHandled) {
+                        const status = document.getElementById("progressStatus");
+                        if (status) status.innerText = "En pausa · " + filename + " · pulsa Reanudar para continuar";
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                    }
+                    return cancelRequested || revocationHandled;
+                }
 
                 function uploadStorageKey(file) {
                     return 'aetherdrop_upload_v1:' + deviceId + ':' + file.name + ':' + file.size + ':' + file.lastModified;
@@ -378,6 +388,10 @@
                     }
 
                     while (Number(current.next_chunk) < Number(current.chunks_total)) {
+                        if (await waitWhilePaused(file.name)) {
+                            if (cancelRequested) return { cancelled: true, progress: current };
+                            return { revoked: true, progress: current };
+                        }
                         if (cancelRequested) return { cancelled: true, progress: current };
                         if (revocationHandled) return { revoked: true, progress: current };
                         const chunkIndex = Number(current.next_chunk);
@@ -571,12 +585,14 @@
 
                     uploadInProgress = true;
                     cancelRequested = false;
+                    pauseRequested = false;
                     input.disabled = true;
                     const progressContainer = document.getElementById('progressContainer');
                     const progressStatus = document.getElementById('progressStatus');
                     const progressPercent = document.getElementById('progressPercent');
                     const progressBar = document.getElementById('progressBar');
                     const cancelButton = document.getElementById('cancelUploadButton');
+                    const pauseButton = document.getElementById('pauseUploadButton');
                     const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
                     let completedBytes = 0;
                     let sentFiles = 0;
@@ -594,10 +610,17 @@
                     setBridgeState('transferring', 'Enviando archivos en bloques verificados…');
                     progressContainer.classList.remove('hidden');
                     cancelButton.classList.remove('hidden');
+                    pauseButton.classList.remove('hidden');
+                    pauseButton.disabled = false;
+                    pauseButton.innerText = "Pausar transferencia";
                     setProgress(0);
 
                     try {
                         for (let index = 0; index < files.length; index++) {
+                            if (await waitWhilePaused(files[index].name)) {
+                                if (cancelRequested) userCancelled = true;
+                                break;
+                            }
                             if (revocationHandled || !localStorage.getItem('aether_token')) break;
                             if (cancelRequested) { userCancelled = true; break; }
                             const file = files[index];
@@ -675,10 +698,13 @@
                         input.disabled = false;
                         cancelButton.disabled = false;
                         cancelButton.classList.add('hidden');
+                        document.getElementById('pauseUploadButton').classList.add('hidden');
+                        document.getElementById('pauseUploadButton').innerText = "Pausar transferencia";
                         progressContainer.classList.add('hidden');
                         activeUploadXhr.current = null;
                         activeTransferId = null;
                         cancelRequested = false;
+                        pauseRequested = false;
                     }
 
                     if (revocationHandled) return;
@@ -701,6 +727,16 @@
                 }
 
                 document.getElementById('cancelUploadButton').addEventListener('click', cancelCurrentUpload);
+                document.getElementById('pauseUploadButton').addEventListener('click', () => {
+                    if (!uploadInProgress) return;
+                    pauseRequested = !pauseRequested;
+                    const button = document.getElementById("pauseUploadButton");
+                    button.innerText = pauseRequested ? "Reanudar transferencia" : "Pausar transferencia";
+                    if (!pauseRequested) {
+                        const status = document.getElementById("progressStatus");
+                        if (status) status.innerText = "Reanudando transferencia…";
+                    }
+                });
 
                 async function fetchFiles() {
                     try {
