@@ -92,6 +92,12 @@ struct UploadResponse {
     files: Vec<UploadReceipt>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadFinishRequest {
+    sha256: String,
+}
+
 #[derive(Clone)]
 struct DownloadTicket {
     file_id: String,
@@ -871,7 +877,7 @@ mod upload_filename_tests {
         finish_chunked_upload, handle_auth, is_allowed_local_authority, origin_matches_authority,
         publish_temp_no_replace, record_auth_failure, sanitize_upload_filename,
         start_chunked_upload, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
-        DownloadTicket, PinRequest, SessionRecord, ServerStatus, UploadStartRequest,
+        DownloadTicket, PinRequest, SessionRecord, ServerStatus, UploadFinishRequest, UploadStartRequest,
         MAX_AUTH_FAILURES, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_UPLOADS,
         MAX_PENDING_UPLOADS, MAX_TRUSTED_DEVICES, UPLOAD_CHUNK_U64,
     };
@@ -1691,7 +1697,14 @@ async fn finish_chunked_upload(
     State(state): State<AppState>,
     Extension(session): Extension<AuthorizedSession>,
     AxumPath(transfer_id): AxumPath<String>,
+    Json(payload): Json<UploadFinishRequest>,
 ) -> Result<Json<UploadResponse>, (StatusCode, &'static str)> {
+    let expected_client_hash = payload.sha256.to_ascii_lowercase();
+    if expected_client_hash.len() != 64
+        || !expected_client_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err((StatusCode::BAD_REQUEST, "Falta un hash SHA-256 completo válido del archivo original."));
+    }
     let _permit = state.upload_slots.clone().try_acquire_owned()
         .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Hay demasiadas operaciones de transferencia simultáneas."))?;
     let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
@@ -1777,8 +1790,11 @@ async fn finish_chunked_upload(
             disk_hasher.update(&buffer[..count]);
         }
         let disk_digest = format!("{:x}", disk_hasher.finalize());
-        if verified_size != upload.expected_size || disk_digest != stream_digest {
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "La verificación de integridad del archivo ha fallado."));
+        if verified_size != upload.expected_size
+            || disk_digest != stream_digest
+            || disk_digest != expected_client_hash
+        {
+            return Err((StatusCode::INTEGRITY_CHECK_FAILED, "El hash del archivo guardado no coincide con el archivo original. No se ha publicado el destino."));
         }
         if !session_is_authorized(&state, &session).await {
             return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
