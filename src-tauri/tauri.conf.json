@@ -10,9 +10,14 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "aether-drop",
-        "width": 800,
-        "height": 600
+        "title": "AetherDrop",
+        "width": 1060,
+        "height": 900,
+        "minWidth": 720,
+        "minHeight": 680,
+        "resizable": true,
+        "decorations": false,
+        "center": true
       }
     ],
     "security": {
