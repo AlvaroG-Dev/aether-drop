@@ -364,7 +364,7 @@
 
     initApp();
     // Refresh device state after pairing/revocation without requiring an app restart.
-    setInterval(async () => { try { renderDevices(await invoke('get_trusted_devices')); scheduleWindowFit(); } catch (e) { showAppAlert('No se pudo actualizar el estado de los dispositivos: ' + String(e)); } }, 2000);
+    setInterval(async () => { try { renderDevices(await invoke('get_trusted_devices')); } catch (e) { showAppAlert('No se pudo actualizar el estado de los dispositivos: ' + String(e)); } }, 2000);
   </script>
 </body>
 </html>
