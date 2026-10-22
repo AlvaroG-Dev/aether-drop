@@ -1,158 +1,180 @@
 <!doctype html>
 <html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <title>AetherDrop - Pro Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-  </head>
-  <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col items-center justify-center p-6 select-none">
-    <div class="w-full max-w-xl bg-slate-900/90 backdrop-blur-2xl border border-slate-800/80 rounded-3xl shadow-2xl p-8 text-center flex flex-col items-center">
-      
-      <!-- Cabecera -->
-      <div class="flex items-center justify-between w-full mb-6">
-        <div class="text-left">
-          <h1 class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">AetherDrop</h1>
-          <p class="text-xs text-slate-400">Panel de Control Pro</p>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f6f7fb" />
+  <title>AetherDrop — Comparte sin complicaciones</title>
+  <style>
+    :root{color-scheme:light;--bg:#f6f7fb;--surface:#fff;--ink:#182033;--muted:#778096;--line:#e8ebf2;--accent:#5b61e8;--accent-dark:#474dcc;--accent-soft:#f0f0ff;--green:#17876b;--green-soft:#eaf8f2;--shadow:0 12px 34px rgba(25,35,66,.055);--radius:20px}
+    *{box-sizing:border-box}
+    html,body{height:100%;overflow:hidden}
+    body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.01em}
+    button{font:inherit;cursor:pointer}
+    button:focus-visible{outline:3px solid #a5a7ff;outline-offset:3px}
+    .app{width:100%;max-width:1060px;margin:0 auto;padding:24px 24px 18px;overflow:hidden}
+    .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:26px}
+    .brand{display:flex;align-items:center;gap:12px}
+    .brand-mark{width:42px;height:42px;border-radius:14px;background:var(--accent);display:grid;place-items:center;color:#fff;box-shadow:0 7px 16px #5b61e82b}
+    .brand-mark svg{width:23px;height:23px}
+    .brand-name{font-weight:760;font-size:19px;letter-spacing:-.055em}
+    .brand-sub{color:var(--muted);font-size:12px;margin-top:1px}
+    .local-badge{display:inline-flex;align-items:center;gap:8px;border:1px solid #dfe4ec;background:#fff;border-radius:999px;padding:8px 12px;color:#626d81;font-size:12px;font-weight:600}
+    .dot{width:7px;height:7px;border-radius:50%;background:#22a77d;box-shadow:0 0 0 3px #22a77d1c}
+    .intro{margin:0 0 19px}
+    .eyebrow{font-size:10px;text-transform:uppercase;letter-spacing:.15em;font-weight:800;color:var(--accent);margin-bottom:7px}
+    h1{font-size:27px;line-height:1.16;letter-spacing:-.055em;margin:0;font-weight:760}
+    .intro p{margin:8px 0 0;color:var(--muted);font-size:13px}
+    .main-grid{display:grid;grid-template-columns:minmax(0,1.04fr) minmax(0,.96fr);gap:16px;align-items:stretch}
+    .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);min-width:0}
+    .connect-panel{padding:22px}
+    .panel-heading{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:17px}
+    .panel-heading h2{margin:0;font-size:14px;letter-spacing:-.025em;font-weight:750}
+    .tiny-label{color:var(--muted);font-size:11px}
+    .qr-row{display:flex;align-items:center;gap:17px}
+    .qr-frame{width:126px;height:126px;flex:0 0 126px;display:grid;place-items:center;background:#fff;border:1px solid var(--line);border-radius:16px;padding:7px}
+    .qr-frame img{width:100%;height:100%;object-fit:contain;border-radius:9px}
+    .qr-placeholder{width:100%;height:100%;display:grid;place-items:center;background:#f7f8fc;border-radius:10px;color:#a1a8b8;font-size:11px;text-align:center;padding:8px}.qr-placeholder[hidden]{display:none}
+    .qr-copy{min-width:0;flex:1}
+    .field-label{font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:#8a92a4;margin-bottom:6px}
+    .url-line{font-size:12px;color:#434c61;word-break:break-all;background:#f7f8fc;border:1px solid #edf0f6;border-radius:10px;padding:10px 11px;min-height:38px}
+    .helper{font-size:11px;color:var(--muted);margin:8px 0 0}
+    .pin-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 15px;margin-top:18px;border:1px solid #e8e8ff;background:linear-gradient(105deg,#f7f7ff,#fbfbff);border-radius:14px}
+    .pin-copy strong{display:block;font-size:12px;font-weight:700}
+    .pin-copy span{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+    .pin-code{font:750 21px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.17em;color:var(--accent);white-space:nowrap}
+    .bridge-panel{padding:20px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}
+    .bridge-scene{position:relative;isolation:isolate;overflow:hidden;min-height:168px;border:1px solid #e9ebf5;border-radius:16px;background:radial-gradient(ellipse at 50% 48%,#f0f0ff 0%,#fafaff 48%,#fff 100%);margin:3px 0 13px}
+    .bridge-halo{position:absolute;width:112px;height:112px;border:1px solid #dcdcff;border-radius:50%;left:50%;top:46%;transform:translate(-50%,-50%);box-shadow:0 0 0 14px #5b61e807,inset 0 0 28px #8b8df512;animation:halo-breathe 4s ease-in-out infinite}
+    .bridge-core{position:absolute;left:50%;top:46%;width:42px;height:42px;transform:translate(-50%,-50%);border-radius:15px;background:linear-gradient(145deg,#777bf6,#5359df);box-shadow:0 7px 20px #5b61e83b;display:grid;place-items:center;color:white;z-index:2}
+    .bridge-core svg{width:20px;height:20px}
+    .bridge-device{position:absolute;top:46%;transform:translateY(-50%);width:48px;height:56px;border-radius:13px;border:1px solid #e1e5ef;background:#fff;display:grid;place-items:center;color:#6d7488;z-index:2;box-shadow:0 7px 20px #2730520b}
+    .bridge-device svg{width:22px;height:22px;stroke:currentColor}
+    .bridge-device.pc{left:calc(50% - 111px)}.bridge-device.phone{right:calc(50% - 111px)}
+    .bridge-track{position:absolute;left:calc(50% - 82px);right:calc(50% - 82px);height:1px;top:46%;background:linear-gradient(90deg,#d5d7ff,#8d91f4,#d5d7ff)}
+    .data-particle{position:absolute;top:calc(46% - 3px);left:calc(50% - 76px);width:6px;height:6px;border-radius:50%;background:#6569ed;box-shadow:0 0 0 4px #6569ed1a;opacity:0;animation:packet 2.4s linear infinite}
+    .data-particle.p2{animation-delay:.8s;background:#8b8ef5}.data-particle.p3{animation-delay:1.6s}
+    .bridge-scene.connected .data-particle{opacity:1}.bridge-scene.connected .bridge-core{animation:core-pulse 2.2s ease-in-out infinite}
+    .bridge-kicker{position:absolute;top:12px;left:13px;font-size:9px;text-transform:uppercase;letter-spacing:.13em;font-weight:800;color:#a0a5b7}
+    .bridge-caption{position:absolute;bottom:13px;left:10px;right:10px;text-align:center}
+    .bridge-status{font-size:12px;font-weight:750;color:#3b4358}
+    .bridge-status-dot{width:7px;height:7px;border-radius:50%;background:#aab0c0;display:inline-block;margin-right:7px}
+    .bridge-scene.connected .bridge-status-dot{background:#1eae81;box-shadow:0 0 0 3px #1eae811c}
+    .bridge-note{font-size:10px;color:#9299aa;margin-top:3px}
+    .connection-note{display:flex;align-items:flex-start;gap:8px;color:#81899a;font-size:11px;line-height:1.5}
+    .connection-note svg{width:15px;height:15px;flex-shrink:0;margin-top:1px}
+    .section-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+    .list-panel{padding:18px 20px;min-height:180px}
+    .list-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:13px}
+    .list-heading h2{font-size:13px;font-weight:750;margin:0;letter-spacing:-.02em}
+    .count{font-size:10px;color:#8b93a5;background:#f5f6fa;padding:4px 7px;border-radius:7px;font-weight:700}
+    .primary-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:0;border-radius:10px;background:var(--accent);color:#fff;padding:9px 12px;font-size:11px;font-weight:700;transition:background .18s,transform .18s}
+    .primary-btn:hover{background:var(--accent-dark);transform:translateY(-1px)}
+    .primary-btn svg{width:14px;height:14px}
+    .subtle-btn{border:1px solid var(--line);background:#fff;color:#5e677a;border-radius:9px;padding:7px 10px;font-size:11px;font-weight:650;transition:background .18s}
+    .subtle-btn:hover{background:#f7f8fc}
+    .item-list{display:flex;flex-direction:column;gap:7px;max-height:150px;overflow:auto;padding-right:2px;scrollbar-width:none;-ms-overflow-style:none}
+    .item-list::-webkit-scrollbar{display:none;width:0;height:0}
+    .empty-state{display:grid;place-items:center;text-align:center;min-height:94px;color:#9aa1b0;font-size:11px;gap:6px}
+    .empty-state svg{width:23px;height:23px;stroke:#b9bfcc}
+    .file-item,.device-item{display:flex;align-items:center;gap:10px;min-width:0;padding:9px 10px;background:#fafbfe;border:1px solid #eff1f6;border-radius:11px}
+    .item-icon{width:31px;height:31px;flex:0 0 31px;display:grid;place-items:center;background:#eeeefe;color:#696de8;border-radius:9px}
+    .item-icon svg{width:16px;height:16px}
+    .item-name{font-size:11px;color:#41495d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+    .item-action{border:0;background:transparent;color:#858da0;font-size:10px;font-weight:700;padding:6px 4px}
+    .item-action:hover{color:#d34e68}
+    .folder-bar{display:flex;align-items:center;gap:12px;margin-top:16px;padding:13px 16px;background:#fff;border:1px solid var(--line);border-radius:15px}
+    .folder-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#f4f5fb;color:#737b91;flex-shrink:0}
+    .folder-icon svg{width:18px;height:18px}
+    .folder-copy{min-width:0;flex:1}
+    .folder-copy .field-label{margin-bottom:2px}
+    .folder-path{font-size:11px;color:#4f586c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .footer{display:flex;justify-content:space-between;gap:12px;color:#a0a6b5;font-size:10px;padding:12px 3px 0}
+    .app-alert{display:none;margin:0 0 12px;padding:10px 12px;border-radius:10px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.app-alert.show{display:block}.app-alert.error{background:#fff2f4;border:1px solid #f5dfe4;color:#a8324a}.app-alert.success{background:#eef9f4;border:1px solid #d9f0e7;color:#167354}
+    .titlebar{display:none;height:40px;align-items:center;justify-content:space-between;padding:0 9px 0 15px;background:#fff;border-bottom:1px solid #e8ebf2;user-select:none;flex-shrink:0}.custom-chrome .titlebar{display:flex}.titlebar-brand{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:780;color:#667087;letter-spacing:.01em;height:100%;flex:1;min-width:0;cursor:default}.titlebar-brand-mark{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;background:#5b61e8;color:#fff;font-weight:800;font-size:11px}.titlebar-controls{display:flex;align-items:center;gap:4px;height:100%;margin-left:12px}.titlebar-btn{width:38px;height:29px;border:0;border-radius:8px;background:transparent;color:#616b80;display:grid;place-items:center;transition:background .14s,color .14s,transform .14s;padding:0}.titlebar-btn svg{width:12px;height:12px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}.titlebar-btn:hover{background:#eef0f7;color:#282f42}.titlebar-btn:active{transform:scale(.94)}.titlebar-btn.close{margin-left:2px}.titlebar-btn.close:hover{background:#e5484d;color:#fff}.custom-chrome .app{padding-top:17px}.compact-layout .app{padding:11px 18px 8px}.compact-layout .topbar{margin-bottom:13px}.compact-layout .intro{margin-bottom:11px}.compact-layout h1{font-size:24px}.compact-layout .connect-panel,.compact-layout .bridge-panel{padding:14px}.compact-layout .bridge-scene{min-height:126px;margin:0 0 9px}.compact-layout .section-grid{gap:10px;margin-top:10px}.compact-layout .list-panel{padding:12px 14px;min-height:125px}.compact-layout .list-heading{margin-bottom:8px}.compact-layout .item-list{max-height:88px}.compact-layout .folder-bar{margin-top:10px;padding:9px 12px}.compact-layout .footer{padding-top:6px}
+    .footer span{display:flex;align-items:center;gap:6px}
+    .footer svg{width:12px;height:12px}
+    @keyframes packet{0%{transform:translateX(0) scale(.7);opacity:0}14%{opacity:1}85%{opacity:1}100%{transform:translateX(152px) scale(1.1);opacity:0}}
+    @keyframes halo-breathe{0%,100%{opacity:.7;transform:translate(-50%,-50%) scale(.97)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.04)}}
+    @keyframes core-pulse{0%,100%{box-shadow:0 7px 20px #5b61e83b}50%{box-shadow:0 7px 28px #5b61e86b}}
+    @media(max-width:700px){.app{padding:20px 15px}.main-grid{grid-template-columns:1fr}.section-grid{grid-template-columns:1fr}.intro h1{font-size:25px}.connect-panel,.bridge-panel{padding:18px}.qr-frame{width:112px;height:112px;flex-basis:112px}.list-panel{min-height:unset}.footer{flex-wrap:wrap}}
+    @media(max-width:380px){.qr-row{align-items:flex-start;gap:10px}.qr-frame{width:88px;height:88px;flex-basis:88px}.pin-code{font-size:18px}.topbar{align-items:flex-start}.local-badge{font-size:10px;padding:7px 9px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.data-particle{display:none}}
+  </style>
+</head>
+<body>
+  <div class="titlebar" id="customTitlebar"><div class="titlebar-brand" id="titlebarDragRegion"><span class="titlebar-brand-mark" aria-hidden="true">A</span><span>AetherDrop</span></div><div class="titlebar-controls"><button class="titlebar-btn" id="windowMinimize" aria-label="Minimizar" title="Minimizar"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 9h8"/></svg></button><button class="titlebar-btn" id="windowMaximize" aria-label="Maximizar" title="Maximizar"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx=".6"/></svg></button><button class="titlebar-btn close" id="windowClose" aria-label="Cerrar" title="Cerrar"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button></div></div>
+  <main class="app">
+    <div id="appAlert" class="app-alert" role="status" aria-live="polite"></div>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7.5 12 4l5 3.5v9L12 20l-5-3.5z"/><path d="m7.5 8 4.5 3 4.5-3M12 11v8"/></svg>
         </div>
-        <div class="bg-indigo-600/10 border border-indigo-500/20 px-3.5 py-1.5 rounded-2xl text-left">
-          <p class="text-[10px] uppercase font-bold text-indigo-400">PIN de Seguridad</p>
-          <p id="pinDisplay" class="text-lg font-mono font-bold text-white tracking-widest">••••</p>
-        </div>
+        <div><div class="brand-name">AetherDrop</div><div class="brand-sub">Comparte archivos, sin complicaciones</div></div>
       </div>
+      <div class="local-badge"><span class="dot"></span> Red local</div>
+    </header>
 
-      <!-- QR y URL -->
-      <div class="flex gap-6 items-center w-full mb-6 bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80">
-        <div class="bg-white p-2.5 rounded-2xl shadow-inner shrink-0">
-          <img id="qrImage" alt="QR" class="w-32 h-32 block rounded-xl" />
-        </div>
-        <div class="text-left overflow-hidden flex-1">
-          <p class="text-xs text-slate-400 font-semibold mb-1">ENLACE LOCAL DE RED:</p>
-          <div class="font-mono text-emerald-400 text-xs break-all bg-slate-900 p-2.5 rounded-xl border border-slate-800 mb-2" id="serverUrl">
-            Cargando...
-          </div>
-          <p class="text-[11px] text-slate-500">Los dispositivos en la misma red Wi-Fi detectarán este host automáticamente.</p>
-        </div>
-      </div>
+    <section class="intro">
+      <div class="eyebrow">Tu espacio de transferencia</div>
+      <h1>Todo conectado.<br>Sin cables ni complicaciones.</h1>
+      <p>Escanea el código desde tu móvil para empezar a compartir.</p>
+    </section>
 
-      <!-- Selector de Carpeta -->
-      <div class="w-full bg-slate-800/30 border border-slate-700/40 p-4 rounded-2xl flex items-center justify-between text-left mb-6 shadow-sm">
-        <div class="overflow-hidden mr-2">
-          <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Carpeta de recepción activa:</p>
-          <p id="savePath" class="text-xs text-slate-200 truncate mt-0.5 font-mono">Cargando...</p>
-        </div>
-        <button onclick="changeDirectory()" class="bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white text-xs px-4 py-2.5 rounded-xl font-semibold transition shrink-0 shadow-lg shadow-sky-900/20">
-          Modificar
-        </button>
-      </div>
-
-      <!-- Sección Dual: Archivos Compartidos y Dispositivos Confiables -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full text-left">
-        
-        <!-- Archivos PC -> Móvil -->
-        <div class="bg-slate-950/40 p-4 rounded-2xl border border-slate-800/80 flex flex-col">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Envío al Móvil</h2>
-            <button onclick="shareFile()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] px-2.5 py-1.5 rounded-lg font-semibold transition shadow">+ Añadir</button>
-          </div>
-          <div id="sharedList" class="space-y-2 max-h-32 overflow-y-auto flex-1 pr-1">
-            <p class="text-xs text-slate-500 text-center py-4">Sin archivos compartidos.</p>
+    <section class="main-grid">
+      <article class="panel connect-panel">
+        <div class="panel-heading"><h2>Conecta tu móvil</h2><span class="tiny-label">Paso 1 de 2</span></div>
+        <div class="qr-row">
+          <div class="qr-frame"><img id="qrImage" alt="Código QR para conectar con AetherDrop" /><div id="qrPlaceholder" class="qr-placeholder">Preparando<br>código QR…</div></div>
+          <div class="qr-copy">
+            <div class="field-label">Dirección local</div>
+            <div class="url-line" id="serverUrl">Buscando tu red…</div>
+            <p class="helper">Conecta ambos dispositivos a la misma red Wi-Fi y escanea el código.</p>
           </div>
         </div>
-
-        <!-- Dispositivos de Confianza -->
-        <div class="bg-slate-950/40 p-4 rounded-2xl border border-slate-800/80 flex flex-col">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">Dispositivos Confiables</h2>
-          </div>
-          <div id="deviceList" class="space-y-2 max-h-32 overflow-y-auto flex-1 pr-1">
-            <p class="text-xs text-slate-500 text-center py-4">Ningún dispositivo vinculado.</p>
-          </div>
+        <div class="pin-row">
+          <div class="pin-copy"><strong>Tu código de vinculación</strong><span>Introdúcelo en tu móvil</span></div>
+          <div class="pin-code" id="pinDisplay" aria-label="PIN de vinculación">••••••</div>
         </div>
+      </article>
 
-      </div>
-    </div>
+      <article class="panel bridge-panel">
+        <div class="panel-heading"><h2>Estado de conexión</h2><span class="tiny-label">En tiempo real</span></div>
+        <section class="bridge-scene" id="deviceBridge" aria-label="Estado visual de conexión entre ordenador y móvil">
+          <div class="bridge-halo"></div><div class="bridge-track"></div>
+          <span class="data-particle"></span><span class="data-particle p2"></span><span class="data-particle p3"></span>
+          <div class="bridge-device pc" aria-label="Ordenador"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+          <div class="bridge-core" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="7"/></svg></div>
+          <div class="bridge-device phone" aria-label="Móvil"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 18.5h4"/></svg></div>
+          <div class="bridge-kicker">Aether link</div>
+          <div class="bridge-caption"><div id="bridgeStatus" class="bridge-status"><span class="bridge-status-dot"></span>Esperando un dispositivo</div><div id="bridgeNote" class="bridge-note">Tu móvil aparecerá aquí al vincularse</div></div>
+        </section>
+        <div class="connection-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><span>La conexión funciona en tu red local. Evita compartir archivos sensibles en redes públicas.</span></div>
+      </article>
+    </section>
 
-    <script type="module">
-      const { invoke } = window.__TAURI__.core;
-      const { open } = window.__TAURI__.dialog;
+    <section class="section-grid">
+      <article class="panel list-panel">
+        <div class="list-heading"><h2>Archivos para enviar</h2><span class="count" id="fileCount">0 archivos</span></div>
+        <div id="sharedList" class="item-list"><div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10z"/><path d="M13 3v7h7M8 15h8M8 18h5"/></svg>Aún no has añadido archivos.</div></div>
+        <button id="addSharedFileButton" class="primary-btn" style="margin-top:13px;width:100%"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Añadir archivos</button>
+      </article>
+      <article class="panel list-panel">
+        <div class="list-heading"><h2>Dispositivos vinculados</h2><span class="count" id="deviceCount">0 dispositivos</span></div>
+        <div id="deviceList" class="item-list"><div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10 18h4"/></svg>Cuando vincules un móvil, aparecerá aquí.</div></div>
+      </article>
+    </section>
 
-      async function initApp() {
-        try {
-          const info = await invoke('get_connection_info');
-          document.getElementById('serverUrl').innerText = info.url;
-          document.getElementById('qrImage').src = info.qr_base64;
-          document.getElementById('savePath').innerText = info.save_path;
-          document.getElementById('pinDisplay').innerText = info.pin;
-        } catch (e) {
-          document.getElementById('serverUrl').innerText = "Error detectando red";
-        }
-        loadData();
-      }
+    <section class="folder-bar">
+      <div class="folder-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>
+      <div class="folder-copy"><div class="field-label">Carpeta de recepción</div><div id="savePath" class="folder-path">Cargando ubicación…</div></div>
+      <button id="changeDirectoryButton" class="subtle-btn">Cambiar</button>
+    </section>
 
-      window.changeDirectory = async () => {
-        const selected = await open({ directory: true, multiple: false });
-        if (selected) {
-          const newPath = await invoke('set_save_directory', { path: selected });
-          document.getElementById('savePath').innerText = newPath;
-        }
-      }
+    <footer class="footer"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>Transferencia local · sin nube</span><span>AetherDrop <span aria-hidden="true">·</span> Simple por diseño</span></footer>
+  </main>
 
-      window.shareFile = async () => {
-        const selected = await open({ multiple: false });
-        if (selected) {
-          const files = await invoke('share_pc_file', { path: selected });
-          renderSharedFiles(files);
-        }
-      }
-
-      window.removeFile = async (id) => {
-        const files = await invoke('remove_pc_file', { id });
-        renderSharedFiles(files);
-      }
-
-      window.revokeDevice = async (deviceId) => {
-        const devices = await invoke('revoke_trusted_device', { deviceId });
-        renderDevices(devices);
-      }
-
-      async function loadData() {
-        try {
-          const files = await invoke('get_shared_files');
-          renderSharedFiles(files);
-          const devices = await invoke('get_trusted_devices');
-          renderDevices(devices);
-        } catch(e) {}
-      }
-
-      function renderSharedFiles(files) {
-        const list = document.getElementById('sharedList');
-        if (!files || files.length === 0) {
-          list.innerHTML = '<p class="text-xs text-slate-500 text-center py-4">Sin archivos compartidos.</p>';
-          return;
-        }
-        list.innerHTML = files.map(f => `
-          <div class="flex items-center justify-between bg-slate-900 p-2 rounded-xl border border-slate-800">
-            <span class="text-xs truncate max-w-[140px] text-slate-200">${f.name}</span>
-            <button onclick="removeFile('${f.id}')" class="text-rose-400 hover:text-rose-300 text-xs font-bold px-2 py-1">✕</button>
-          </div>
-        `).join('');
-      }
-
-      function renderDevices(devices) {
-        const list = document.getElementById('deviceList');
-        if (!devices || devices.length === 0) {
-          list.innerHTML = '<p class="text-xs text-slate-500 text-center py-4">Ningún dispositivo vinculado.</p>';
-          return;
-        }
-        list.innerHTML = devices.map(d => `
-          <div class="flex items-center justify-between bg-slate-900 p-2 rounded-xl border border-slate-800">
-            <span class="text-xs truncate max-w-[140px] text-slate-300 font-mono">${d}</span>
-            <button onclick="revokeDevice('${d}')" class="text-rose-400 hover:text-rose-300 text-[10px] font-semibold">Revocar</button>
-          </div>
-        `).join('');
-      }
-
-      initApp();
-    </script>
-  </body>
+  <script type="module" src="app.js"></script>
+</body>
 </html>

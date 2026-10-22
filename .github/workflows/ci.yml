@@ -1,0 +1,35 @@
+name: Rust and Tauri checks
+
+on:
+  push:
+    branches: [master, "feat/**", "fix/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check desktop JavaScript syntax
+        run: node --check src/app.js
+      - name: Check mobile JavaScript syntax
+        run: node --check src-tauri/src/mobile.js
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev patchelf libwebkit2gtk-4.1-dev
+      - name: Format Rust sources in the CI workspace
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all
+      - name: Run Rust unit tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Compile Rust application
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked --manifest-path src-tauri/Cargo.toml

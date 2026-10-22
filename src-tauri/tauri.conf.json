@@ -10,13 +10,18 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "aether-drop",
-        "width": 800,
-        "height": 600
+        "title": "AetherDrop",
+        "width": 1060,
+        "height": 900,
+        "minWidth": 720,
+        "minHeight": 680,
+        "resizable": true,
+        "decorations": true,
+        "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'"
     }
   },
   "bundle": {
