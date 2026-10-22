@@ -709,8 +709,8 @@ fn content_disposition_value(filename: &str) -> String {
 mod upload_filename_tests {
     use super::{
         auth_rate_limited, content_disposition_value, is_allowed_local_authority,
-        origin_matches_authority, record_auth_failure, sanitize_upload_filename,
-        AuthFailureState, MAX_AUTH_FAILURES,
+        origin_matches_authority, publish_temp_no_replace, record_auth_failure,
+        sanitize_upload_filename, AuthFailureState, MAX_AUTH_FAILURES,
     };
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
@@ -739,6 +739,40 @@ mod upload_filename_tests {
         let value = content_disposition_value("foto ñ.png");
         assert!(value.starts_with("attachment; filename=\"foto _.png\"; filename*=UTF-8''"));
         assert!(value.contains("%C3%B1"));
+    }
+
+    #[tokio::test]
+    async fn atomic_publish_never_overwrites_an_existing_file() {
+        let directory = std::env::temp_dir()
+            .join(format!("aetherdrop-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let temp = directory.join(".aetherdrop-upload-test.part");
+        let destination = directory.join("existing.bin");
+        tokio::fs::write(&temp, b"new-data").await.unwrap();
+        tokio::fs::write(&destination, b"old-data").await.unwrap();
+
+        let error = publish_temp_no_replace(&temp, &destination).await.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"old-data");
+        assert!(tokio::fs::try_exists(&temp).await.unwrap());
+
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn atomic_publish_exposes_complete_file_and_removes_temp_link() {
+        let directory = std::env::temp_dir()
+            .join(format!("aetherdrop-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let temp = directory.join(".aetherdrop-upload-test.part");
+        let destination = directory.join("new.bin");
+        tokio::fs::write(&temp, b"complete-payload").await.unwrap();
+
+        publish_temp_no_replace(&temp, &destination).await.unwrap();
+        assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"complete-payload");
+        assert!(!tokio::fs::try_exists(&temp).await.unwrap());
+
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
     }
 
     #[test]
@@ -819,6 +853,16 @@ async fn create_download_ticket(
         expires_at: now + Duration::from_secs(60),
     });
     Ok(Json(DownloadTicketResponse { ticket, expires_in: 60 }))
+}
+
+async fn publish_temp_no_replace(temp_path: &Path, destination: &Path) -> std::io::Result<()> {
+    tokio::fs::hard_link(temp_path, destination).await?;
+    // Publication already succeeded. A cleanup failure leaves only a hidden .part
+    // hard link and must not turn a successfully published file into a failed upload.
+    if let Err(error) = tokio::fs::remove_file(temp_path).await {
+        eprintln!("AetherDrop: no se pudo retirar el temporal {:?}: {}", temp_path, error);
+    }
+    Ok(())
 }
 
 async fn session_is_authorized(state: &AppState, session: &AuthorizedSession) -> bool {
@@ -1006,13 +1050,8 @@ async fn handle_upload(
             return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado o la sesión ha caducado."));
         }
 
-        match tokio::fs::hard_link(&temp_path, &filepath).await {
-            Ok(()) => {
-                if let Err(error) = tokio::fs::remove_file(&temp_path).await {
-                    eprintln!("AetherDrop: no se pudo retirar el temporal {:?}: {}", temp_path, error);
-                }
-                receipts.push(receipt);
-            }
+        match publish_temp_no_replace(&temp_path, &filepath).await {
+            Ok(()) => receipts.push(receipt),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let _ = tokio::fs::remove_file(&temp_path).await;
                 return Err((StatusCode::CONFLICT, "Ya existe un archivo con ese nombre. Cambia el nombre y vuelve a intentarlo."));
