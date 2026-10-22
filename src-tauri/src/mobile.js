@@ -347,6 +347,10 @@
                     let current = status;
                     let failedAttempts = 0;
                     const wholeFileHasher = window.sha256.create();
+                    const transferStartedAt = performance.now();
+                    let lastProgressAt = transferStartedAt;
+                    let lastProgressBytes = 0;
+                    let smoothedBytesPerSecond = 0;
 
                     // Revalidate every already-committed block against the currently
                     // selected File before resuming. Matching names/sizes/timestamps
@@ -389,12 +393,43 @@
                             buffer,
                             chunkHash,
                             sentInChunk => {
-                                const loaded = completedBytes + Number(current.received_bytes) + sentInChunk;
+                                const fileLoaded = Number(current.received_bytes) + sentInChunk;
+                                const loaded = completedBytes + fileLoaded;
                                 const percent = totalBytes > 0
                                     ? Math.max(0, Math.min(100, Math.floor((loaded / totalBytes) * 100)))
                                     : 0;
                                 document.getElementById('progressBar').style.width = percent + '%';
                                 document.getElementById('progressPercent').innerText = percent + '%';
+
+                                const now = performance.now();
+                                const elapsed = (now - lastProgressAt) / 1000;
+                                if (elapsed >= 0.4) {
+                                    const instantaneous = Math.max(0, (fileLoaded - lastProgressBytes) / elapsed);
+                                    smoothedBytesPerSecond = smoothedBytesPerSecond
+                                        ? smoothedBytesPerSecond * 0.7 + instantaneous * 0.3
+                                        : instantaneous;
+                                    lastProgressAt = now;
+                                    lastProgressBytes = fileLoaded;
+                                }
+                                const remaining = Math.max(0, file.size - fileLoaded);
+                                const speed = smoothedBytesPerSecond;
+                                const formatBytes = value => {
+                                    if (!Number.isFinite(value) || value < 0) return '—';
+                                    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+                                    let amount = value, unit = 0;
+                                    while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit++; }
+                                    return amount.toFixed(unit === 0 ? 0 : 1) + ' ' + units[unit];
+                                };
+                                const formatDuration = seconds => {
+                                    if (!Number.isFinite(seconds) || seconds < 0) return 'calculando…';
+                                    const total = Math.ceil(seconds);
+                                    return total < 60 ? total + ' s' : Math.floor(total / 60) + ' min ' + (total % 60) + ' s';
+                                };
+                                const statusElement = document.getElementById('progressStatus');
+                                if (statusElement && speed > 0) {
+                                    statusElement.innerText = file.name + ' · ' + formatBytes(speed) +
+                                        ' · quedan ' + formatDuration(remaining / speed);
+                                }
                             }
                         );
                         if (response.cancelled || cancelRequested) return { cancelled: true, progress: current };
