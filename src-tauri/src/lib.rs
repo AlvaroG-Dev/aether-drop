@@ -27,8 +27,7 @@ use serde::{Deserialize, Serialize};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use arboard::Clipboard;
 
-const MAX_UPLOAD_REQUEST_BYTES: usize = 2 * 1024 * 1024 * 1024;
-const MAX_UPLOAD_FILE_BYTES: u64 = MAX_UPLOAD_REQUEST_BYTES as u64 - 1024 * 1024;
+const MAX_UPLOAD_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_CONCURRENT_UPLOADS: usize = 3;
 const MAX_PENDING_UPLOADS: usize = 24;
 const UPLOAD_CHUNK_BYTES: usize = 8 * 1024 * 1024;
