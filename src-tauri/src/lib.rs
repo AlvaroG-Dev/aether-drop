@@ -661,6 +661,21 @@ fn origin_matches_authority(origin: &str, request_authority: &str) -> bool {
         })
 }
 
+async fn apply_security_headers(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert("X-Content-Type-Options", axum::http::HeaderValue::from_static("nosniff"));
+    headers.insert("X-Frame-Options", axum::http::HeaderValue::from_static("DENY"));
+    headers.insert("Referrer-Policy", axum::http::HeaderValue::from_static("no-referrer"));
+    headers.insert("Cache-Control", axum::http::HeaderValue::from_static("no-store"));
+    headers.insert("Cross-Origin-Resource-Policy", axum::http::HeaderValue::from_static("same-origin"));
+    headers.insert("Permissions-Policy", axum::http::HeaderValue::from_static("camera=(), microphone=(), geolocation=()"));
+    response
+}
+
 async fn require_auth(
     State(state): State<AppState>,
     mut request: Request<axum::body::Body>,
@@ -693,6 +708,16 @@ async fn require_auth(
         if !origin_matches_authority(origin, host) {
             return StatusCode::FORBIDDEN.into_response();
         }
+    }
+
+    // Modern browsers attach Fetch Metadata to subresource requests. Reject
+    // cross-site requests even when a caller attempts to omit or manipulate Origin.
+    if request.headers()
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("cross-site"))
+    {
+        return StatusCode::FORBIDDEN.into_response();
     }
     if request.uri().path() == "/" || request.uri().path() == "/auth" || request.uri().path() == "/mobile.js" || request.uri().path() == "/sha256.js" {
         return next.run(request).await;
@@ -2364,7 +2389,8 @@ fn start_local_server(state: AppState) {
                 .route("/download/:id", get(download_pc_file))
                 .route("/clipboard", get(get_clipboard).post(set_clipboard).layer(DefaultBodyLimit::max(MAX_CLIPBOARD_REQUEST_BYTES)))
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_auth))
-                .with_state(state);
+                .with_state(state)
+                .layer(middleware::from_fn(apply_security_headers));
 
             if let Err(error) = axum::serve(
                 listener,
