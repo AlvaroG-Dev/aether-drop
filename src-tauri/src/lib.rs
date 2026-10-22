@@ -316,6 +316,13 @@ async fn revoke_trusted_device(device_id: String, state: tauri::State<'_, AppSta
             }
         });
     }
+    let pending_ids: Vec<String> = state.pending_uploads.read().await.iter()
+        .filter(|(_, upload)| upload.owner_device_id == device_id)
+        .map(|(transfer_id, _)| transfer_id.clone())
+        .collect();
+    for transfer_id in pending_ids {
+        remove_pending_upload(&state, &transfer_id).await;
+    }
     Ok(state.trusted_devices.read().await.clone())
 }
 
@@ -1873,6 +1880,32 @@ fn start_local_server(state: AppState) {
                                     entry.window_started.elapsed() < AUTH_FAILURE_WINDOW
                                         || entry.blocked_until.is_some_and(|until| until > now)
                                 });
+                            }
+                            let pending_ids: Vec<String> = maintenance_state.pending_uploads.read().await
+                                .iter()
+                                .filter(|(_, handle)| {
+                                    handle.cancellation.is_cancelled()
+                                        || handle.session_cancellation.is_cancelled()
+                                        || handle.session_expires_at <= now
+                                })
+                                .map(|(id, _)| id.clone())
+                                .collect();
+                            for transfer_id in pending_ids {
+                                remove_pending_upload(&maintenance_state, &transfer_id).await;
+                            }
+                            let pending_snapshot: Vec<(String, PendingUploadHandle)> =
+                                maintenance_state.pending_uploads.read().await
+                                    .iter()
+                                    .map(|(id, handle)| (id.clone(), handle.clone()))
+                                    .collect();
+                            for (transfer_id, handle) in pending_snapshot {
+                                let inactive = {
+                                    let upload = handle.inner.lock().await;
+                                    upload.last_activity.elapsed() >= PENDING_UPLOAD_TTL
+                                };
+                                if inactive {
+                                    remove_pending_upload(&maintenance_state, &transfer_id).await;
+                                }
                             }
                             let directory = maintenance_state.save_dir.read().await.clone();
                             cleanup_stale_uploads(&directory).await;
