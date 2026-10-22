@@ -64,6 +64,12 @@ struct AuthFailureState {
     blocked_until: Option<Instant>,
 }
 
+enum PublishError {
+    Unauthorized,
+    ShuttingDown,
+    Io(std::io::Error),
+}
+
 #[derive(Serialize)]
 struct UploadReceipt {
     filename: String,
@@ -867,6 +873,40 @@ async fn publish_temp_no_replace(temp_path: &Path, destination: &Path) -> std::i
     Ok(())
 }
 
+async fn publish_temp_for_session(
+    state: &AppState,
+    session: &AuthorizedSession,
+    temp_path: &Path,
+    destination: &Path,
+) -> Result<(), PublishError> {
+    // Hold read locks through the atomic publication. Revocation takes write locks,
+    // so either the publication completes first or the revoked device cannot publish.
+    let trusted_devices = state.trusted_devices.read().await;
+    let sessions = state.session_tokens.read().await;
+    let valid = sessions.get(&session.token).is_some_and(|record| {
+        record.device_id == session.device_id
+            && record.expires_at > Instant::now()
+            && !record.cancellation.is_cancelled()
+    }) && trusted_devices.contains(&session.device_id)
+        && !session.cancellation.is_cancelled()
+        && session.expires_at > Instant::now();
+    if !valid {
+        return Err(PublishError::Unauthorized);
+    }
+
+    tokio::select! {
+        biased;
+        _ = state.server_shutdown.cancelled() => Err(PublishError::ShuttingDown),
+        _ = session.cancellation.cancelled() => Err(PublishError::Unauthorized),
+        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
+            Err(PublishError::Unauthorized)
+        }
+        result = publish_temp_no_replace(temp_path, destination) => {
+            result.map_err(PublishError::Io)
+        }
+    }
+}
+
 async fn session_is_authorized(state: &AppState, session: &AuthorizedSession) -> bool {
     if state.server_shutdown.is_cancelled()
         || session.cancellation.is_cancelled()
@@ -1052,13 +1092,21 @@ async fn handle_upload(
             return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado o la sesión ha caducado."));
         }
 
-        match publish_temp_no_replace(&temp_path, &filepath).await {
+        match publish_temp_for_session(&state, &session, &temp_path, &filepath).await {
             Ok(()) => receipts.push(receipt),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(PublishError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let _ = tokio::fs::remove_file(&temp_path).await;
                 return Err((StatusCode::CONFLICT, "Ya existe un archivo con ese nombre. Cambia el nombre y vuelve a intentarlo."));
             }
-            Err(_) => {
+            Err(PublishError::Unauthorized) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado o la sesión ha caducado."));
+            }
+            Err(PublishError::ShuttingDown) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+            }
+            Err(PublishError::Io(_)) => {
                 let _ = tokio::fs::remove_file(&temp_path).await;
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, "El sistema de archivos no permite publicar el archivo de forma atómica."));
             }
