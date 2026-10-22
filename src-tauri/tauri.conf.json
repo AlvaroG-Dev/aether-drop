@@ -11,10 +11,10 @@
     "windows": [
       {
         "title": "AetherDrop",
-        "width": 1060,
-        "height": 900,
-        "minWidth": 720,
-        "minHeight": 680,
+        "width": 900,
+        "height": 720,
+        "minWidth": 640,
+        "minHeight": 520,
         "resizable": true,
         "decorations": true,
         "center": true
