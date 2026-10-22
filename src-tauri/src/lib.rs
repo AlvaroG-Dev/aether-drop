@@ -216,6 +216,8 @@ pub struct ConnectionInfo {
     webtransport_certificate_hash: Option<String>,
     webtransport_origin: String,
     webtransport_error: Option<String>,
+    webtransport_probe_url: Option<String>,
+    webtransport_probe_qr_base64: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -267,6 +269,23 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
     let dir = state.save_dir.read().await;
     let webtransport_info = state.webtransport_info.read().await.clone();
     let webtransport_error = state.webtransport_error.read().await.clone();
+    let (webtransport_probe_url, webtransport_probe_qr_base64) =
+        if let Some(info) = webtransport_info.as_ref() {
+            let probe_url = format!(
+                "https://alvarog-dev.github.io/aether-drop/webtransport-probe.html?host={}&hash={}",
+                info.host, info.certificate_hash
+            );
+            let code = QrCode::new(probe_url.as_bytes()).map_err(|error| error.to_string())?;
+            let image = code.render::<image::Luma<u8>>().min_dimensions(180, 180).build();
+            let mut buffer = Cursor::new(Vec::new());
+            image.write_to(&mut buffer, image::ImageFormat::Png).map_err(|error| error.to_string())?;
+            (
+                Some(probe_url),
+                Some(format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(buffer.get_ref()))),
+            )
+        } else {
+            (None, None)
+        };
 
     Ok(ConnectionInfo {
         url,
@@ -277,6 +296,8 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
         webtransport_certificate_hash: webtransport_info.as_ref().map(|info| info.certificate_hash.clone()),
         webtransport_origin: webtransport::ALLOWED_ORIGIN.to_owned(),
         webtransport_error,
+        webtransport_probe_url,
+        webtransport_probe_qr_base64,
     })
 }
 
