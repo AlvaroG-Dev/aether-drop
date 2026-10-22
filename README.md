@@ -43,7 +43,7 @@ Estos valores son límites defensivos del prototipo, no cuotas de almacenamiento
 ## Limitaciones de seguridad conocidas
 
 - **El transporte sigue usando HTTP en el puerto 8080 y escucha en las interfaces de red locales.** El token Bearer, el PIN y el contenido pueden ser observados o manipulados por un atacante capaz de interceptar la red.
-- El SHA-256 de una subida compara los bytes recibidos con una lectura posterior del archivo temporal. Detecta discrepancias de escritura/almacenamiento, pero no constituye una prueba criptográfica del archivo original en el móvil ni protege el contenido frente a un atacante de red.
+- El cliente compara el SHA-256 completo del archivo seleccionado con el hash final devuelto por el servidor. El servidor valida cada bloque y vuelve a leer el temporal antes de publicarlo. Esto detecta cambios accidentales y evita reanudar con un archivo diferente, pero no autentica el contenido frente a un atacante activo de red mientras el transporte siga usando HTTP.
 - La comprobación Host/Origin reduce algunas rutas de ataque del navegador, pero no es sustituto de TLS.
 - Los tickets de descarga evitan poner el token Bearer en el enlace; siguen viajando por HTTP y su protección depende de la seguridad de esa conexión.
 - Los bloqueos de sesión son en memoria y desaparecen al reiniciar. No hay persistencia de dispositivos ni recuperación de transferencias interrumpidas.
