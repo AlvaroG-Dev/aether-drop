@@ -1,20 +1,24 @@
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Extension, Multipart, Path, State},
     middleware::{self, Next},
     http::{Request, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use bytes::Bytes;
 use futures_util::TryStreamExt;
 use local_ip_address::local_ip;
-use std::net::SocketAddr;
+use sha2::{Digest, Sha256};
+use std::net::{IpAddr, SocketAddr};
+use std::time::{Duration, Instant};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::collections::HashMap;
 use rand::Rng;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::RwLock;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{RwLock, Semaphore};
+use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
 use base64::{engine::general_purpose, Engine as _};
 use std::io::Cursor;
@@ -23,6 +27,51 @@ use serde::{Deserialize, Serialize};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use arboard::Clipboard;
 
+const MAX_UPLOAD_REQUEST_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_FILE_BYTES: u64 = MAX_UPLOAD_REQUEST_BYTES as u64 - 1024 * 1024;
+const MAX_UPLOAD_FILES: usize = 32;
+const MAX_CONCURRENT_UPLOADS: usize = 3;
+const MAX_SHARED_FILES: usize = 256;
+const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
+const MAX_TRACKED_AUTH_IPS: usize = 1024;
+const MAX_AUTH_FAILURES: u32 = 10;
+const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const AUTH_BLOCK_DURATION: Duration = Duration::from_secs(60);
+const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+
+#[derive(Clone)]
+struct SessionRecord {
+    device_id: String,
+    expires_at: Instant,
+    cancellation: CancellationToken,
+}
+
+#[derive(Clone)]
+struct AuthorizedSession {
+    token: String,
+    device_id: String,
+    cancellation: CancellationToken,
+}
+
+#[derive(Clone)]
+struct AuthFailureState {
+    window_started: Instant,
+    attempts: u32,
+    blocked_until: Option<Instant>,
+}
+
+#[derive(Serialize)]
+struct UploadReceipt {
+    filename: String,
+    size_bytes: u64,
+    sha256: String,
+}
+
+#[derive(Serialize)]
+struct UploadResponse {
+    files: Vec<UploadReceipt>,
+}
+
 #[derive(Clone)]
 struct AppState {
     save_dir: Arc<RwLock<PathBuf>>,
@@ -30,8 +79,9 @@ struct AppState {
     pin: String,
     trusted_devices: Arc<RwLock<Vec<String>>>,
     clipboard_text: Arc<RwLock<String>>,
-    session_tokens: Arc<RwLock<HashMap<String, String>>>,
-    auth_failures: Arc<RwLock<(u32, std::time::Instant)>>,
+    session_tokens: Arc<RwLock<HashMap<String, SessionRecord>>>,
+    auth_failures: Arc<RwLock<HashMap<IpAddr, AuthFailureState>>>,
+    upload_slots: Arc<Semaphore>,
 }
 
 #[derive(Serialize)]
@@ -56,7 +106,11 @@ struct ClipboardRequest {
 #[tauri::command]
 async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<ConnectionInfo, String> {
     let my_ip = local_ip().map_err(|e| e.to_string())?;
-    let url = format!("http://{}:8080", my_ip);
+    let host = match my_ip {
+        IpAddr::V4(address) => address.to_string(),
+        IpAddr::V6(address) => format!("[{}]", address),
+    };
+    let url = format!("http://{}:8080", host);
 
     let code = QrCode::new(url.as_bytes()).map_err(|e| e.to_string())?;
     let image = code.render::<image::Luma<u8>>().min_dimensions(200, 200).build();
@@ -77,20 +131,50 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
 
 #[tauri::command]
 async fn set_save_directory(path: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let mut dir = state.save_dir.write().await;
-    *dir = PathBuf::from(&path);
-    Ok(path)
+    if path.trim().is_empty() {
+        return Err("La carpeta de destino está vacía.".to_owned());
+    }
+    let candidate = PathBuf::from(&path);
+    tokio::fs::create_dir_all(&candidate).await
+        .map_err(|error| format!("No se pudo preparar la carpeta: {}", error))?;
+    let canonical = tokio::fs::canonicalize(&candidate).await
+        .map_err(|error| format!("No se pudo resolver la carpeta: {}", error))?;
+    let metadata = tokio::fs::metadata(&canonical).await
+        .map_err(|error| format!("No se pudo consultar la carpeta: {}", error))?;
+    if !metadata.is_dir() {
+        return Err("El destino seleccionado no es una carpeta.".to_owned());
+    }
+    let probe_path = canonical.join(format!(".aetherdrop-write-test-{}", uuid::Uuid::new_v4()));
+    let probe = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&probe_path).await
+        .map_err(|error| format!("No hay permiso de escritura en esa carpeta: {}", error))?;
+    drop(probe);
+    tokio::fs::remove_file(&probe_path).await
+        .map_err(|error| format!("No se pudo limpiar la prueba de escritura: {}", error))?;
+    let display_path = canonical.to_string_lossy().to_string();
+    *state.save_dir.write().await = canonical;
+    Ok(display_path)
 }
 
 #[tauri::command]
 async fn share_pc_file(path: String, state: tauri::State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let path_buf = PathBuf::from(&path);
-    if path_buf.exists() {
-        let id = uuid::Uuid::new_v4().to_string();
-        let mut files = state.pc_files.write().await;
-        files.push((id, path_buf));
-        drop(files);
+    let selected = PathBuf::from(&path);
+    let canonical = tokio::fs::canonicalize(&selected).await
+        .map_err(|error| format!("No se puede acceder al archivo seleccionado: {}", error))?;
+    let metadata = tokio::fs::metadata(&canonical).await
+        .map_err(|error| format!("No se puede consultar el archivo: {}", error))?;
+    if !metadata.is_file() {
+        return Err("Solo se pueden compartir archivos normales, no carpetas ni dispositivos especiales.".to_owned());
     }
+    let mut files = state.pc_files.write().await;
+    if files.iter().any(|(_, existing)| existing == &canonical) {
+        drop(files);
+        return get_shared_files_internal(&state).await;
+    }
+    if files.len() >= MAX_SHARED_FILES {
+        return Err(format!("Has alcanzado el límite de {} archivos compartidos.", MAX_SHARED_FILES));
+    }
+    files.push((uuid::Uuid::new_v4().to_string(), canonical));
+    drop(files);
     get_shared_files_internal(&state).await
 }
 
@@ -115,16 +199,20 @@ async fn get_trusted_devices(state: tauri::State<'_, AppState>) -> Result<Vec<St
 
 #[tauri::command]
 async fn revoke_trusted_device(device_id: String, state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
-    // Mark the device untrusted first; auth middleware checks this list on every request.
     {
         let mut devices = state.trusted_devices.write().await;
-        devices.retain(|d| d != &device_id);
+        devices.retain(|device| device != &device_id);
     }
-    // Also discard every bearer token owned by this device. Locks are kept separate
-    // to maintain a consistent lock order with the authentication middleware.
     {
         let mut sessions = state.session_tokens.write().await;
-        sessions.retain(|_, session_device_id| session_device_id != &device_id);
+        sessions.retain(|_, session| {
+            if session.device_id == device_id {
+                session.cancellation.cancel();
+                false
+            } else {
+                true
+            }
+        });
     }
     Ok(state.trusted_devices.read().await.clone())
 }
