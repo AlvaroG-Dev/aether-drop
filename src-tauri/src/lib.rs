@@ -1489,24 +1489,28 @@ async fn upload_chunk(
         return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado o el dispositivo se ha desvinculado."));
     }
 
+    let shutdown_cancellation = state.server_shutdown.clone();
+    let transfer_cancellation = handle.cancellation.clone();
+    let session_cancellation = session.cancellation.clone();
+    let upload_inner = handle.inner.clone();
     let mut upload = tokio::select! {
         biased;
-        _ = state.server_shutdown.cancelled() => {
+        _ = shutdown_cancellation.cancelled() => {
             drop(handle);
             remove_pending_upload(&state, &transfer_id).await;
             return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
         }
-        _ = handle.cancellation.cancelled() => {
+        _ = transfer_cancellation.cancelled() => {
             drop(handle);
             remove_pending_upload(&state, &transfer_id).await;
             return Err((StatusCode::UNAUTHORIZED, "La transferencia se ha cancelado."));
         }
-        _ = session.cancellation.cancelled() => {
+        _ = session_cancellation.cancelled() => {
             drop(handle);
             remove_pending_upload(&state, &transfer_id).await;
             return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado."));
         }
-        guard = handle.inner.lock() => guard,
+        guard = upload_inner.lock() => guard,
     };
     if chunk_index != upload.next_chunk {
         return Err((StatusCode::CONFLICT, "El índice del bloque no coincide; consulta el estado y continúa desde el siguiente bloque esperado."));
@@ -1589,24 +1593,28 @@ async fn finish_chunked_upload(
         return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
     }
 
+    let shutdown_cancellation = state.server_shutdown.clone();
+    let transfer_cancellation = handle.cancellation.clone();
+    let session_cancellation = session.cancellation.clone();
+    let upload_inner = handle.inner.clone();
     let mut upload = tokio::select! {
         biased;
-        _ = state.server_shutdown.cancelled() => {
+        _ = shutdown_cancellation.cancelled() => {
             drop(handle);
             remove_pending_upload(&state, &transfer_id).await;
             return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
         }
-        _ = handle.cancellation.cancelled() => {
+        _ = transfer_cancellation.cancelled() => {
             drop(handle);
             remove_pending_upload(&state, &transfer_id).await;
             return Err((StatusCode::UNAUTHORIZED, "La transferencia se ha cancelado."));
         }
-        _ = session.cancellation.cancelled() => {
+        _ = session_cancellation.cancelled() => {
             drop(handle);
             remove_pending_upload(&state, &transfer_id).await;
             return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado."));
         }
-        guard = handle.inner.lock() => guard,
+        guard = upload_inner.lock() => guard,
     };
     if upload.received_size != upload.expected_size {
         return Err((StatusCode::CONFLICT, "La transferencia está incompleta; continúa los bloques antes de finalizar."));
