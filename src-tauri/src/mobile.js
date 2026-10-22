@@ -139,6 +139,284 @@
                 }
 
                 let uploadInProgress = false;
+                let cancelRequested = false;
+                let activeTransferId = null;
+
+                function uploadStorageKey(file) {
+                    return 'aetherdrop_upload_v1:' + deviceId + ':' + file.name + ':' + file.size + ':' + file.lastModified;
+                }
+
+                async function responseError(response, fallback) {
+                    let detail = '';
+                    try { detail = (await response.text()).trim(); } catch (_) {}
+                    return detail && detail.length < 240 ? detail : (fallback || ('Error HTTP ' + response.status + '.'));
+                }
+
+                async function authorizedFetch(url, options = {}) {
+                    const res = await fetch(url, {
+                        cache: 'no-store',
+                        ...options,
+                        headers: { ...authHeaders(), ...(options.headers || {}) }
+                    });
+                    if (res.status === 401) handleAuthorizationRevoked();
+                    return res;
+                }
+
+                async function getUploadStatus(transferId) {
+                    const response = await authorizedFetch('/upload/status/' + encodeURIComponent(transferId));
+                    if (!response.ok) {
+                        return {
+                            ok: false,
+                            revoked: response.status === 401,
+                            status: response.status,
+                            message: await responseError(response, 'No se pudo consultar el estado de la transferencia.')
+                        };
+                    }
+                    try { return { ok: true, status: await response.json() }; }
+                    catch (_) { return { ok: false, message: 'El servidor devolvió un estado de transferencia no válido.' }; }
+                }
+
+                async function getOrStartUpload(file, storageKey) {
+                    let saved = null;
+                    try { saved = JSON.parse(sessionStorage.getItem(storageKey) || 'null'); } catch (_) {}
+                    if (saved && saved.transfer_id && saved.filename === file.name &&
+                        Number(saved.size_bytes) === file.size &&
+                        Number(saved.last_modified) === file.lastModified &&
+                        saved.device_id === deviceId) {
+                        const status = await getUploadStatus(saved.transfer_id);
+                        if (status.revoked) return { revoked: true, message: status.message };
+                        if (status.ok && status.status.filename === file.name &&
+                            Number(status.status.size_bytes) === file.size) {
+                            return { ok: true, transferId: saved.transfer_id, status: status.status, storageKey, resumed: true };
+                        }
+                        try { sessionStorage.removeItem(storageKey); } catch (_) {}
+                    }
+
+                    const response = await authorizedFetch('/upload/start', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: file.name, size_bytes: file.size })
+                    });
+                    if (response.status === 401) {
+                        return { revoked: true, message: 'La sesión ha caducado. Vuelve a vincular el móvil con el PIN.' };
+                    }
+                    if (!response.ok) {
+                        return {
+                            ok: false,
+                            status: response.status,
+                            message: await responseError(response, 'No se pudo iniciar la transferencia.')
+                        };
+                    }
+                    let data;
+                    try { data = await response.json(); }
+                    catch (_) { return { ok: false, message: 'El servidor devolvió una respuesta de inicio no válida.' }; }
+                    if (!data.transfer_id || Number(data.size_bytes) === -1 ||
+                        !Number.isSafeInteger(Number(data.chunk_size)) ||
+                        Number(data.chunk_size) < 1 ||
+                        Number(data.chunks_total) !== Math.ceil(file.size / Number(data.chunk_size))) {
+                        return { ok: false, message: 'Los parámetros de transferencia del servidor no son válidos.' };
+                    }
+                    try {
+                        sessionStorage.setItem(storageKey, JSON.stringify({
+                            transfer_id: data.transfer_id,
+                            filename: file.name,
+                            size_bytes: file.size,
+                            last_modified: file.lastModified,
+                            device_id: deviceId
+                        }));
+                    } catch (_) {}
+                    return {
+                        ok: true,
+                        transferId: data.transfer_id,
+                        status: {
+                            filename: file.name,
+                            size_bytes: file.size,
+                            received_bytes: 0,
+                            next_chunk: Number(data.next_chunk) || 0,
+                            chunks_total: Number(data.chunks_total),
+                            chunk_size: Number(data.chunk_size)
+                        },
+                        storageKey,
+                        resumed: false
+                    };
+                }
+
+                function postUploadChunk(transferId, chunkIndex, buffer, chunkHash, onProgress) {
+                    return new Promise(resolve => {
+                        const xhr = new XMLHttpRequest();
+                        activeUploadXhr.current = xhr;
+                        xhr.open('POST', '/upload/chunk/' + encodeURIComponent(transferId) + '/' + chunkIndex, true);
+                        xhr.timeout = 120000;
+                        const token = localStorage.getItem('aether_token');
+                        if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+                        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                        xhr.setRequestHeader('X-Chunk-SHA256', chunkHash);
+
+                        xhr.upload.onprogress = event => {
+                            if (event.lengthComputable && onProgress) {
+                                onProgress(Math.max(0, Math.min(buffer.byteLength, event.loaded)));
+                            }
+                        };
+                        xhr.onload = () => {
+                            if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
+                            if (xhr.status === 401) {
+                                handleAuthorizationRevoked();
+                                resolve({ ok: false, revoked: true, status: 401, message: 'La sesión se ha revocado.' });
+                                return;
+                            }
+                            if (xhr.status === 200) {
+                                try { resolve({ ok: true, progress: JSON.parse(xhr.responseText) }); }
+                                catch (_) { resolve({ ok: false, retryable: true, message: 'Respuesta de bloque no válida.' }); }
+                                return;
+                            }
+                            const retryable = xhr.status === 0 || [408, 425, 429, 500, 502, 503, 504].includes(xhr.status);
+                            resolve({
+                                ok: false,
+                                retryable,
+                                status: xhr.status,
+                                message: (xhr.responseText || '').trim() || ('Error HTTP ' + xhr.status + '.')
+                            });
+                        };
+                        xhr.onerror = () => {
+                            if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
+                            resolve({ ok: false, retryable: true, message: 'La conexión se interrumpió durante el envío del bloque.' });
+                        };
+                        xhr.ontimeout = () => {
+                            if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
+                            resolve({ ok: false, retryable: true, message: 'El bloque tardó demasiado; se comprobará si llegó al PC.' });
+                        };
+                        xhr.onabort = () => {
+                            if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
+                            if (xhr._aetherRevoked || revocationHandled) {
+                                resolve({ ok: false, revoked: true, message: 'Sesión revocada.' });
+                            } else if (cancelRequested) {
+                                resolve({ ok: false, cancelled: true, message: 'Transferencia cancelada.' });
+                            } else {
+                                resolve({ ok: false, retryable: true, message: 'La petición se interrumpió; se comprobará el estado antes de reintentar.' });
+                            }
+                        };
+                        xhr.send(buffer);
+                    });
+                }
+
+                async function transferFileInChunks(file, transferId, status, totalBytes, completedBytes) {
+                    const chunkSize = Number(status.chunk_size);
+                    let current = status;
+                    let failedAttempts = 0;
+                    while (Number(current.next_chunk) < Number(current.chunks_total)) {
+                        if (cancelRequested) return { cancelled: true, progress: current };
+                        if (revocationHandled) return { revoked: true, progress: current };
+                        const chunkIndex = Number(current.next_chunk);
+                        const offset = chunkIndex * chunkSize;
+                        const blob = file.slice(offset, Math.min(file.size, offset + chunkSize));
+                        const buffer = await blob.arrayBuffer();
+                        // js-sha256 is vendored under its MIT license because browsers
+                        // do not expose SubtleCrypto on ordinary HTTP LAN IP origins.
+                        const chunkHash = window.sha256(new Uint8Array(buffer));
+                        let response = await postUploadChunk(
+                            transferId,
+                            chunkIndex,
+                            buffer,
+                            chunkHash,
+                            sentInChunk => {
+                                const loaded = completedBytes + Number(current.received_bytes) + sentInChunk;
+                                const percent = totalBytes > 0
+                                    ? Math.max(0, Math.min(100, Math.floor((loaded / totalBytes) * 100)))
+                                    : 0;
+                                document.getElementById('progressBar').style.width = percent + '%';
+                                document.getElementById('progressPercent').innerText = percent + '%';
+                            }
+                        );
+                        if (response.cancelled) return { cancelled: true, progress: current };
+                        if (response.revoked) return { revoked: true, message: response.message };
+                        if (response.ok) {
+                            current = response.progress;
+                            failedAttempts = 0;
+                            continue;
+                        }
+
+                        if (response.retryable || response.status === 409) {
+                            const refreshed = await getUploadStatus(transferId);
+                            if (refreshed.revoked) return { revoked: true, message: refreshed.message };
+                            if (refreshed.ok) {
+                                current = refreshed.status;
+                                if (Number(current.next_chunk) > chunkIndex) {
+                                    failedAttempts = 0;
+                                    continue;
+                                }
+                                if (Number(current.next_chunk) < chunkIndex) {
+                                    failedAttempts = 0;
+                                    continue;
+                                }
+                            }
+                            if (failedAttempts < 3 && !cancelRequested && !revocationHandled) {
+                                await new Promise(resolve => setTimeout(resolve, 350 * (2 ** failedAttempts)));
+                                failedAttempts++;
+                                continue;
+                            }
+                        }
+                        return {
+                            ok: false,
+                            status: response.status,
+                            message: response.message || 'No se pudo transferir un bloque del archivo.',
+                            progress: current,
+                            retryable: response.retryable
+                        };
+                    }
+                    return { ok: true, progress: current };
+                }
+
+                async function finalizeUpload(transferId) {
+                    let response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), { method: 'POST' });
+                    if (response.status === 401) {
+                        return { revoked: true, message: 'La sesión se ha revocado.' };
+                    }
+                    if (!response.ok && response.status === 409) {
+                        // A lost chunk response is recovered through status. If the
+                        // server still says incomplete, do not claim completion.
+                        const status = await getUploadStatus(transferId);
+                        if (status.revoked) return { revoked: true, message: status.message };
+                        if (status.ok && Number(status.status.received_bytes) === Number(status.status.size_bytes)) {
+                            response = await authorizedFetch('/upload/finish/' + encodeURIComponent(transferId), { method: 'POST' });
+                        }
+                    }
+                    if (!response.ok) {
+                        return {
+                            ok: false,
+                            status: response.status,
+                            message: await responseError(response, 'No se pudo verificar y finalizar el archivo.')
+                        };
+                    }
+                    try {
+                        const data = await response.json();
+                        if (!data.files || data.files.length !== 1) {
+                            return { ok: false, message: 'La respuesta de finalización no contiene exactamente un archivo.' };
+                        }
+                        return { ok: true, receipt: data.files[0] };
+                    } catch (_) {
+                        return { ok: false, message: 'El servidor devolvió una respuesta de integridad no válida.' };
+                    }
+                }
+
+                async function cancelPendingUpload(transferId, storageKey) {
+                    if (transferId && !revocationHandled && localStorage.getItem('aether_token')) {
+                        try {
+                            await authorizedFetch('/upload/cancel/' + encodeURIComponent(transferId), { method: 'DELETE' });
+                        } catch (_) {}
+                    }
+                    if (storageKey) {
+                        try { sessionStorage.removeItem(storageKey); } catch (_) {}
+                    }
+                }
+
+                async function cancelCurrentUpload() {
+                    if (!uploadInProgress) return;
+                    cancelRequested = true;
+                    const xhr = activeUploadXhr.current;
+                    if (xhr && xhr.readyState !== XMLHttpRequest.DONE) xhr.abort();
+                    const status = document.getElementById('progressStatus');
+                    if (status) status.innerText = 'Cancelando y limpiando el archivo temporal…';
+                }
 
                 async function uploadFiles() {
                     const input = document.getElementById('fileInput');
@@ -146,142 +424,143 @@
 
                     const files = Array.from(input.files);
                     if (files.length > 32) {
-                        showToast("Selecciona como máximo 32 archivos por operación.", false);
-                        input.value = "";
+                        showToast('Selecciona como máximo 32 archivos por operación.', false);
+                        input.value = '';
+                        return;
+                    }
+                    if (!window.sha256 || typeof window.sha256 !== 'function') {
+                        showToast('No se pudo cargar el módulo de verificación SHA-256. Recarga la página e inténtalo de nuevo.', false);
                         return;
                     }
 
                     uploadInProgress = true;
+                    cancelRequested = false;
                     input.disabled = true;
                     const progressContainer = document.getElementById('progressContainer');
                     const progressStatus = document.getElementById('progressStatus');
                     const progressPercent = document.getElementById('progressPercent');
                     const progressBar = document.getElementById('progressBar');
+                    const cancelButton = document.getElementById('cancelUploadButton');
                     const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-                    let uploadedBytes = 0;
+                    let completedBytes = 0;
                     let sentFiles = 0;
+                    let userCancelled = false;
                     const failures = [];
 
-                    function updateProgress(currentFileFraction) {
-                        const projected = uploadedBytes + (currentFileFraction || 0);
+                    function setProgress(loadedBytes) {
                         const percent = totalBytes > 0
-                            ? Math.max(0, Math.min(100, Math.floor((projected / totalBytes) * 100)))
-                            : Math.floor((sentFiles / files.length) * 100);
+                            ? Math.max(0, Math.min(100, Math.floor((loadedBytes / totalBytes) * 100)))
+                            : (sentFiles === files.length ? 100 : 0);
                         progressBar.style.width = percent + '%';
                         progressPercent.innerText = percent + '%';
                     }
 
-                    setBridgeState('transferring', 'Enviando archivos al ordenador…');
+                    setBridgeState('transferring', 'Enviando archivos en bloques verificados…');
                     progressContainer.classList.remove('hidden');
-                    progressBar.style.width = '0%';
-                    progressPercent.innerText = '0%';
+                    cancelButton.classList.remove('hidden');
+                    setProgress(0);
 
                     try {
                         for (let index = 0; index < files.length; index++) {
                             if (revocationHandled || !localStorage.getItem('aether_token')) break;
+                            if (cancelRequested) { userCancelled = true; break; }
                             const file = files[index];
-                            progressStatus.innerText = 'Subiendo ' + file.name + ' (' + (index + 1) + ' de ' + files.length + ')…';
+                            const storageKey = uploadStorageKey(file);
+                            let transferId = null;
+                            activeTransferId = null;
+                            progressStatus.innerText = 'Preparando ' + file.name + ' (' + (index + 1) + ' de ' + files.length + ')…';
 
-                            const result = await new Promise(resolve => {
-                                const formData = new FormData();
-                                formData.append('file', file, file.name);
-                                const xhr = new XMLHttpRequest();
-                                activeUploadXhr.current = xhr;
-                                xhr.open('POST', '/upload', true);
-                                xhr.timeout = 0;
-                                const token = localStorage.getItem('aether_token');
-                                if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+                            try {
+                                const started = await getOrStartUpload(file, storageKey);
+                                if (started.revoked || revocationHandled) break;
+                                if (!started.ok) throw new Error(started.message || 'No se pudo iniciar la transferencia.');
+                                transferId = started.transferId;
+                                activeTransferId = transferId;
+                                let status = started.status;
+                                const alreadyReceived = Number(status.received_bytes) || 0;
+                                setProgress(completedBytes + alreadyReceived);
+                                progressStatus.innerText = (started.resumed ? 'Reanudando ' : 'Subiendo ') +
+                                    file.name + ' · bloque ' + (Number(status.next_chunk) + 1) + ' de ' + status.chunks_total;
 
-                                xhr.upload.onprogress = event => {
-                                    if (event.lengthComputable) {
-                                        const fraction = Math.max(0, Math.min(1, event.loaded / event.total));
-                                        updateProgress(file.size * fraction);
+                                const chunks = await transferFileInChunks(file, transferId, status, totalBytes, completedBytes);
+                                if (chunks.revoked || revocationHandled) break;
+                                if (chunks.cancelled || cancelRequested) {
+                                    await cancelPendingUpload(transferId, storageKey);
+                                    userCancelled = true;
+                                    break;
+                                }
+                                if (!chunks.ok) {
+                                    if ([400, 403, 404, 409, 413].includes(chunks.status)) {
+                                        await cancelPendingUpload(transferId, storageKey);
                                     }
-                                };
+                                    throw new Error(chunks.message || 'La transferencia se ha interrumpido.');
+                                }
 
-                                xhr.onload = () => {
-                                    if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
-                                    if (xhr.status === 401) {
-                                        handleAuthorizationRevoked();
-                                        resolve({ ok: false, revoked: true, message: 'Sesión revocada.' });
-                                        return;
+                                progressStatus.innerText = 'Verificando en disco ' + file.name + '…';
+                                const finished = await finalizeUpload(transferId);
+                                if (finished.revoked || revocationHandled) break;
+                                if (!finished.ok) {
+                                    if ([400, 403, 404, 409, 413].includes(finished.status)) {
+                                        await cancelPendingUpload(transferId, storageKey);
                                     }
-                                    if (xhr.status === 200) {
-                                        try {
-                                            const receipt = JSON.parse(xhr.responseText);
-                                            const uploaded = receipt.files && receipt.files[0];
-                                            if (!uploaded || uploaded.filename !== file.name ||
-                                                Number(uploaded.size_bytes) !== file.size ||
-                                                !/^[a-f0-9]{64}$/.test(uploaded.sha256)) {
-                                                resolve({ ok: false, message: 'La respuesta de integridad del servidor no es válida.' });
-                                                return;
-                                            }
-                                            resolve({ ok: true, receipt: uploaded });
-                                        } catch (_) {
-                                            resolve({ ok: false, message: 'El servidor devolvió una respuesta de transferencia no válida.' });
-                                        }
-                                        return;
-                                    }
-                                    const detail = (xhr.responseText || '').trim();
-                                    const known = {
-                                        400: 'La petición o el nombre del archivo no son válidos.',
-                                        401: 'La sesión ha caducado. Vuelve a vincular el móvil con el PIN.',
-                                        409: 'Ya existe un archivo con ese nombre en el PC.',
-                                        413: 'El archivo o la petición supera el límite permitido.',
-                                        429: 'Hay demasiadas transferencias o intentos. Espera y vuelve a probar.',
-                                        507: 'No hay espacio suficiente o no se puede escribir el archivo.'
-                                    };
-                                    resolve({
-                                        ok: false,
-                                        message: detail && detail.length < 220 ? detail : (known[xhr.status] || 'Error HTTP ' + xhr.status + '.')
-                                    });
-                                };
+                                    throw new Error(finished.message || 'No se pudo finalizar la transferencia.');
+                                }
 
-                                xhr.onerror = () => {
-                                    if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
-                                    resolve({ ok: false, message: 'No se pudo conectar con el PC. Comprueba la Wi-Fi y el firewall.' });
-                                };
-                                xhr.onabort = () => {
-                                    if (activeUploadXhr.current === xhr) activeUploadXhr.current = null;
-                                    if (xhr._aetherRevoked || revocationHandled) {
-                                        resolve({ ok: false, revoked: true, message: 'Sesión revocada.' });
-                                    } else {
-                                        resolve({ ok: false, message: 'La transferencia se canceló antes de terminar.' });
-                                    }
-                                };
-                                xhr.send(formData);
-                            });
-
-                            if (result.revoked || revocationHandled) break;
-                            if (result.ok) {
+                                const receipt = finished.receipt;
+                                if (receipt.filename !== file.name ||
+                                    Number(receipt.size_bytes) !== file.size ||
+                                    !/^[a-f0-9]{64}$/.test(receipt.sha256)) {
+                                    await cancelPendingUpload(transferId, storageKey);
+                                    throw new Error('La respuesta de integridad del servidor no coincide con el archivo.');
+                                }
+                                try { sessionStorage.removeItem(storageKey); } catch (_) {}
                                 sentFiles++;
-                                uploadedBytes += file.size;
-                                updateProgress(0);
-                            } else {
-                                failures.push(file.name + ': ' + result.message);
+                                completedBytes += file.size;
+                                setProgress(completedBytes);
+                            } catch (error) {
+                                if (revocationHandled) break;
+                                if (cancelRequested) {
+                                    await cancelPendingUpload(transferId, storageKey);
+                                    userCancelled = true;
+                                    break;
+                                }
+                                failures.push(file.name + ': ' + String(error));
+                                // Keep transfer IDs on transient/network failure so the
+                                // next selection of the same file can resume at its next block.
+                            } finally {
+                                if (activeTransferId === transferId) activeTransferId = null;
                             }
                         }
                     } finally {
                         uploadInProgress = false;
                         input.disabled = false;
+                        cancelButton.classList.add('hidden');
                         progressContainer.classList.add('hidden');
+                        activeUploadXhr.current = null;
+                        activeTransferId = null;
+                        cancelRequested = false;
                     }
 
                     if (revocationHandled) return;
-                    if (sentFiles === files.length) {
+                    if (userCancelled) {
+                        setBridgeState('paired', 'Transferencia cancelada');
+                        showToast('Transferencia cancelada. Se ha intentado borrar el temporal del PC.', false);
+                    } else if (sentFiles === files.length) {
                         input.value = '';
                         setBridgeState('paired', 'Transferencia completada');
                         showToast(files.length === 1
-                            ? 'Archivo enviado y comprobado correctamente.'
-                            : 'Todos los archivos se enviaron y comprobaron correctamente.', true);
+                            ? 'Archivo enviado y verificado correctamente.'
+                            : 'Todos los archivos se enviaron y verificaron correctamente.', true);
                     } else if (sentFiles > 0) {
                         setBridgeState('paired', 'Transferencia parcial');
-                        showToast('Se enviaron ' + sentFiles + ' de ' + files.length + ' archivos. ' + failures[0], false);
+                        showToast('Se enviaron ' + sentFiles + ' de ' + files.length + ' archivos. ' + (failures[0] || ''), false);
                     } else {
                         setBridgeState('paired', 'No se pudo completar la transferencia');
                         showToast(failures[0] || 'La transferencia no se completó. Comprueba la conexión y vuelve a intentarlo.', false);
                     }
                 }
+
+                document.getElementById('cancelUploadButton').addEventListener('click', cancelCurrentUpload);
 
                 async function fetchFiles() {
                     try {
