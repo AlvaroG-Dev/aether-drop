@@ -269,8 +269,9 @@
         document.getElementById('savePath').innerText = info.save_path;
         document.getElementById('pinDisplay').innerText = info.pin;
       } catch (e) {
-        document.getElementById('serverUrl').innerText = 'No se pudo detectar la red';
-        document.getElementById('qrPlaceholder').textContent = 'Red no disponible';
+        document.getElementById('serverUrl').innerText = 'Servidor local no disponible';
+        document.getElementById('qrPlaceholder').textContent = 'Servidor no disponible';
+        showAppAlert('No se pudo iniciar o consultar el servidor local: ' + String(e));
       }
       await loadData();
       scheduleWindowFit();
