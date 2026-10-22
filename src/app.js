@@ -61,14 +61,14 @@
         const scale = await currentWindow.scaleFactor();
         const monitor = await currentWindow.currentMonitor();
         const screenHeight = monitor ? monitor.size.height / scale : window.screen.availHeight;
-        const maxHeight = Math.max(680, Math.floor(Math.min(screenHeight, window.screen.availHeight) - 36));
+        const maxHeight = Math.max(520, Math.floor(Math.min(screenHeight, window.screen.availHeight) - 36));
         let desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
         document.body.classList.toggle("compact-layout", desired > maxHeight);
         await new Promise(resolve => requestAnimationFrame(resolve));
         desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
-        const targetHeight = Math.max(680, Math.min(Math.ceil(desired), maxHeight));
+        const targetHeight = Math.max(520, Math.min(Math.ceil(desired), maxHeight));
         const inner = await currentWindow.innerSize();
-        const targetWidth = Math.max(720, Math.min(Math.ceil(inner.width / scale), Math.floor(window.screen.availWidth - 24)));
+        const targetWidth = Math.max(640, Math.min(Math.ceil(inner.width / scale), Math.floor(window.screen.availWidth - 24)));
         const LogicalSize = window.__TAURI__?.dpi?.LogicalSize;
         if (!LogicalSize) throw new Error("No está disponible LogicalSize en Tauri.");
         if (Math.abs(inner.height / scale - targetHeight) > 18 || Math.abs(inner.width / scale - targetWidth) > 18) {
