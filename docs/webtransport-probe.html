@@ -33,7 +33,7 @@ const button = document.getElementById('connect');
 const params = new URLSearchParams(location.search);
 const host = params.get('host') || '';
 const hash = params.get('hash') || '';
-const validHost = /^(?:\\d{1,3}\\.){3}\\d{1,3}$/.test(host) &&
+const validHost = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) &&
   host.split('.').every(part => Number(part) >= 0 && Number(part) <= 255);
 const validHash = /^[a-f0-9]{64}$/i.test(hash);
 const secure = window.isSecureContext === true;
@@ -48,9 +48,9 @@ function hexToBytes(value) {
 }
 setStatus(
   'Contexto seguro: ' + (secure ? 'sí' : 'no') +
-  '\\nWebTransport: ' + (supported ? 'disponible' : 'no disponible') +
-  '\\nHost LAN: ' + (validHost ? host : 'inválido o ausente') +
-  '\\nHuella SHA-256: ' + (validHash ? 'válida' : 'inválida o ausente')
+  '\nWebTransport: ' + (supported ? 'disponible' : 'no disponible') +
+  '\nHost LAN: ' + (validHost ? host : 'inválido o ausente') +
+  '\nHuella SHA-256: ' + (validHash ? 'válida' : 'inválida o ausente')
 );
 button.disabled = !secure || !supported || !validHost || !validHash;
 button.addEventListener('click', async () => {
@@ -75,7 +75,7 @@ button.addEventListener('click', async () => {
     ]);
     const stream = await transport.createBidirectionalStream();
     const writer = stream.writable.getWriter();
-    await writer.write(new TextEncoder().encode(JSON.stringify({ type: 'pair', pin }) + '\\n'));
+    await writer.write(new TextEncoder().encode(JSON.stringify({ type: 'pair', pin }) + '\n'));
     await writer.close();
 
     const reader = stream.readable.getReader();
@@ -84,21 +84,21 @@ button.addEventListener('click', async () => {
       const { value, done } = await reader.read();
       if (done) break;
       responseText += new TextDecoder().decode(value, { stream: true });
-      if (responseText.includes('\\n')) break;
+      if (responseText.includes('\n')) break;
     }
-    const responseLine = responseText.split('\\n')[0];
+    const responseLine = responseText.split('\n')[0];
     const response = JSON.parse(responseLine);
     if (!response.ok || response.protocol !== 'aetherdrop-webtransport-v1') {
       throw new Error('El PC rechazó el PIN o la versión del protocolo.');
     }
-    setStatus('Conexión autenticada correctamente.\\n\\n✓ Certificado TLS validado por SHA-256\\n✓ Canal WebTransport cifrado activo\\n✓ PIN de vinculación aceptado\\n\\nEsta prueba no ha enviado archivos.', 'ok');
+    setStatus('Conexión autenticada correctamente.\n\n✓ Certificado TLS validado por SHA-256\n✓ Canal WebTransport cifrado activo\n✓ PIN de vinculación aceptado\n\nEsta prueba no ha enviado archivos.', 'ok');
     await reader.cancel().catch(() => {});
     transport.close({ closeCode: 0, reason: 'Prueba completada' });
   } catch (error) {
     if (transport) {
       try { transport.close({ closeCode: 1, reason: 'Prueba fallida' }); } catch (_) {}
     }
-    setStatus('No se pudo validar el canal seguro.\\n\\n' + String(error?.message || error) + '\\n\\nNo se ha usado una conexión insegura.', 'bad');
+    setStatus('No se pudo validar el canal seguro.\n\n' + String(error?.message || error) + '\n\nNo se ha usado una conexión insegura.', 'bad');
   } finally {
     button.disabled = false;
   }
