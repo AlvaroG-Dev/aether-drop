@@ -1179,7 +1179,7 @@ mod upload_filename_tests {
 
         let Json(response) = finish_chunked_upload(
             State(state.clone()),
-            Extension(session),
+            Extension(session.clone()),
             AxumPath(start.transfer_id.clone()),
             Json(UploadFinishRequest {
                 sha256: expected_hash.clone(),
@@ -1964,6 +1964,24 @@ async fn finish_chunked_upload(
     {
         return Err((StatusCode::BAD_REQUEST, "Falta un hash SHA-256 completo válido del archivo original."));
     }
+
+    // If the server published the file but the HTTP response was lost, return the
+    // original receipt without publishing again. Bind the retry to the same session
+    // and require the same full-file digest.
+    {
+        let mut completed = state.completed_uploads.write().await;
+        completed.retain(|_, record| record.expires_at > Instant::now());
+        if let Some(record) = completed.get(&transfer_id) {
+            if record.owner_device_id != session.device_id || record.session_token != session.token {
+                return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
+            }
+            if record.receipt.sha256 != expected_client_hash {
+                return Err((StatusCode::UNPROCESSABLE_ENTITY, "El hash del archivo no coincide con la finalización original."));
+            }
+            return Ok(Json(UploadResponse { files: vec![record.receipt.clone()] }));
+        }
+    }
+
     let _permit = state.upload_slots.clone().try_acquire_owned()
         .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Hay demasiadas operaciones de transferencia simultáneas."))?;
     let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
