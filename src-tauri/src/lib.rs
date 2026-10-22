@@ -849,16 +849,18 @@ fn content_disposition_value(filename: &str) -> String {
 mod upload_filename_tests {
     use super::{
         auth_rate_limited, cancel_chunked_upload, chunks_for_size, content_disposition_value,
-        finish_chunked_upload, is_allowed_local_authority, origin_matches_authority,
+        finish_chunked_upload, handle_auth, is_allowed_local_authority, origin_matches_authority,
         publish_temp_no_replace, record_auth_failure, sanitize_upload_filename,
         start_chunked_upload, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
-        DownloadTicket, SessionRecord, ServerStatus, UploadStartRequest, MAX_AUTH_FAILURES,
-        MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_UPLOADS, MAX_PENDING_UPLOADS, UPLOAD_CHUNK_U64,
+        DownloadTicket, PinRequest, SessionRecord, ServerStatus, UploadStartRequest,
+        MAX_AUTH_FAILURES, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_UPLOADS,
+        MAX_PENDING_UPLOADS, MAX_TRUSTED_DEVICES, UPLOAD_CHUNK_U64,
     };
     use axum::{
         body::Bytes,
-        extract::{Extension, Path as AxumPath, State},
+        extract::{ConnectInfo, Extension, Path as AxumPath, State},
         http::{HeaderMap, HeaderValue, StatusCode},
+        response::IntoResponse,
         Json,
     };
     use sha2::{Digest, Sha256};
@@ -1130,6 +1132,67 @@ mod upload_filename_tests {
         assert_eq!(state.reserved_upload_bytes.load(Ordering::Acquire), 0);
         assert!(state.pending_uploads.read().await.is_empty());
         assert!(tokio::fs::read_dir(&directory).await.unwrap().next_entry().await.unwrap().is_none());
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn re_pairing_rotates_the_session_and_cancels_the_previous_token() {
+        let directory = test_directory().await;
+        let (state, _session) = test_state(directory.clone());
+        let old_cancellation = state.session_tokens.read().await
+            .get("test-session-token")
+            .unwrap()
+            .cancellation
+            .clone();
+
+        let response = handle_auth(
+            State(state.clone()),
+            ConnectInfo("192.0.2.10:51000".parse().unwrap()),
+            Json(PinRequest {
+                pin: "123456".to_owned(),
+                device_id: "dev_test_device".to_owned(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(old_cancellation.is_cancelled());
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let new_token = json.get("token").and_then(|value| value.as_str()).unwrap();
+        assert_ne!(new_token, "test-session-token");
+        let sessions = state.session_tokens.read().await;
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions.contains_key(new_token));
+        drop(sessions);
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pairing_rejects_new_devices_after_the_trusted_device_limit() {
+        let directory = test_directory().await;
+        let (state, _session) = test_state(directory.clone());
+        {
+            let mut devices = state.trusted_devices.write().await;
+            *devices = (0..MAX_TRUSTED_DEVICES)
+                .map(|index| format!("dev_trusted_{index}"))
+                .collect();
+        }
+        let response = handle_auth(
+            State(state.clone()),
+            ConnectInfo("192.0.2.11:51001".parse().unwrap()),
+            Json(PinRequest {
+                pin: "123456".to_owned(),
+                device_id: "dev_new_device".to_owned(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(state.trusted_devices.read().await.len(), MAX_TRUSTED_DEVICES);
+        assert!(state.session_tokens.read().await.is_empty());
         tokio::fs::remove_dir_all(&directory).await.unwrap();
     }
 
