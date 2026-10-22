@@ -192,7 +192,7 @@
       }
     }
     window.minimizeApp = () => runWindowAction(() => currentWindow.minimize());
-    window.toggleMaximizeApp = () => runWindowAction(() => currentWindow.toggleMaximize());
+    window.toggleMaximizeApp = () => runWindowAction(async () => { await currentWindow.toggleMaximize(); await updateMaximizeControl(); });
     window.closeApp = () => runWindowAction(() => currentWindow.close());
     async function updateMaximizeControl() {
       if (!currentWindow || isMacOS) return;
@@ -218,7 +218,6 @@
       document.getElementById("customTitlebar").addEventListener("dblclick", event => {
         if (!event.target.closest("button")) window.toggleMaximizeApp();
       });
-      currentWindow?.onResized?.(() => { updateMaximizeControl(); });
       updateMaximizeControl();
     }
     let fitScheduled = false;
