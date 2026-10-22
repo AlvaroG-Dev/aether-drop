@@ -906,6 +906,37 @@ async fn handle_upload(
                 return Err(error);
             }
         };
+        // This endpoint accepts exactly one file per request. The mobile client
+        // batches multiple user selections as independent requests, allowing precise
+        // per-file receipts and preventing a late malformed field from partially
+        // succeeding under a single HTTP request.
+        let next_field = tokio::select! {
+            _ = state.server_shutdown.cancelled() => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+            }
+            _ = session.cancellation.cancelled() => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado."));
+            }
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(session.expires_at)) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."));
+            }
+            result = multipart.next_field() => result,
+        };
+        match next_field {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::BAD_REQUEST, "Envía un archivo por petición; el cliente puede hacer varias peticiones seguidas."));
+            }
+            Err(_) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err((StatusCode::BAD_REQUEST, "La petición multipart contiene datos adicionales no válidos."));
+            }
+        }
+
         if !session_is_authorized(&state, &session).await {
             let _ = tokio::fs::remove_file(&temp_path).await;
             return Err((StatusCode::UNAUTHORIZED, "El dispositivo ha sido desvinculado o la sesión ha caducado."));
