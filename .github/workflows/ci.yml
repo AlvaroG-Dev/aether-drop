@@ -35,3 +35,13 @@ jobs:
         run: cargo check --manifest-path src-tauri/Cargo.toml
       - name: Run Clippy
         run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml
+      - name: Save formatted Rust source and resolved Cargo lockfile for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aetherdrop-ci-generated
+          path: |
+            src-tauri/src/lib.rs
+            src-tauri/Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
