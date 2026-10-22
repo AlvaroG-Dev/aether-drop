@@ -64,6 +64,9 @@ struct AuthorizedSession {
 }
 
 #[derive(Clone)]
+struct UploadRequestPermit(Arc<OwnedSemaphorePermit>);
+
+#[derive(Clone)]
 struct AuthFailureState {
     window_started: Instant,
     attempts: u32,
@@ -698,6 +701,18 @@ async fn require_auth(
         expires_at: session.expires_at,
         cancellation: session.cancellation,
     });
+    // Acquire before passing the request to Axum's Bytes extractor. This bounds
+    // the number of 8 MiB request bodies buffered in memory, not merely the number
+    // of handlers that happen to be writing to disk.
+    if request.uri().path().starts_with("/upload/chunk/") {
+        let permit = match state.upload_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return StatusCode::TOO_MANY_REQUESTS.into_response();
+            }
+        };
+        request.extensions_mut().insert(UploadRequestPermit(Arc::new(permit)));
+    }
     next.run(request).await
 }
 
@@ -1532,12 +1547,11 @@ async fn chunked_upload_status(
 async fn upload_chunk(
     State(state): State<AppState>,
     Extension(session): Extension<AuthorizedSession>,
+    Extension(_request_permit): Extension<UploadRequestPermit>,
     AxumPath((transfer_id, chunk_index)): AxumPath<(String, u64)>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<UploadProgressResponse>, (StatusCode, &'static str)> {
-    let _permit = state.upload_slots.clone().try_acquire_owned()
-        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "Hay demasiadas operaciones de transferencia simultáneas."))?;
     let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
         .ok_or((StatusCode::NOT_FOUND, "La transferencia pendiente no existe o ha caducado."))?;
     if handle.owner_device_id != session.device_id || handle.session_token != session.token {
@@ -1575,6 +1589,12 @@ async fn upload_chunk(
         }
         guard = upload_inner.lock() => guard,
     };
+    if upload.last_activity.elapsed() >= PENDING_UPLOAD_TTL {
+        drop(upload);
+        drop(handle);
+        remove_pending_upload(&state, &transfer_id).await;
+        return Err((StatusCode::GONE, "La transferencia ha caducado por inactividad."));
+    }
     if chunk_index != upload.next_chunk {
         return Err((StatusCode::CONFLICT, "El índice del bloque no coincide; consulta el estado y continúa desde el siguiente bloque esperado."));
     }
