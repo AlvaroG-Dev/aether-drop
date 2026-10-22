@@ -1194,6 +1194,7 @@ mod upload_filename_tests {
                 .map(|index| format!("dev_trusted_{index}"))
                 .collect();
         }
+        state.session_tokens.write().await.clear();
         let response = handle_auth(
             State(state.clone()),
             ConnectInfo("192.0.2.11:51001".parse().unwrap()),
