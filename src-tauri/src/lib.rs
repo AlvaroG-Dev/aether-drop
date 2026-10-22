@@ -810,7 +810,7 @@ mod upload_filename_tests {
         publish_temp_no_replace, record_auth_failure, sanitize_upload_filename,
         start_chunked_upload, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
         DownloadTicket, SessionRecord, ServerStatus, UploadStartRequest, MAX_AUTH_FAILURES,
-        UPLOAD_CHUNK_U64, MAX_CONCURRENT_UPLOADS, MAX_PENDING_UPLOADS,
+        MAX_CONCURRENT_UPLOADS, MAX_PENDING_UPLOADS,
     };
     use axum::{
         body::Bytes,
@@ -821,7 +821,7 @@ mod upload_filename_tests {
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
     use std::net::IpAddr;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::str::FromStr;
     use std::sync::{atomic::AtomicU64, Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -971,7 +971,6 @@ mod upload_filename_tests {
 
     #[test]
     fn chunk_count_handles_empty_exact_and_partial_boundaries() {
-        use super::{chunks_for_size, UPLOAD_CHUNK_U64};
         assert_eq!(chunks_for_size(0), 0);
         assert_eq!(chunks_for_size(1), 1);
         assert_eq!(chunks_for_size(UPLOAD_CHUNK_U64), 1);
@@ -982,7 +981,7 @@ mod upload_filename_tests {
     #[tokio::test]
     async fn chunked_upload_writes_verifies_and_atomically_publishes_file() {
         let directory = test_directory().await;
-        let (state, session) = test_state(directory.clone()).await;
+        let (state, session) = test_state(directory.clone());
         let data = b"AetherDrop chunk-integrity integration test".to_vec();
         let expected_hash = format!("{:x}", Sha256::digest(&data));
         let Json(start) = start_chunked_upload(
@@ -1031,7 +1030,7 @@ mod upload_filename_tests {
     #[tokio::test]
     async fn bad_chunk_hash_does_not_advance_or_write_and_cancel_cleans_temp_file() {
         let directory = test_directory().await;
-        let (state, session) = test_state(directory.clone()).await;
+        let (state, session) = test_state(directory.clone());
         let data = b"must not be written under the wrong digest".to_vec();
         let Json(start) = start_chunked_upload(
             State(state.clone()),
@@ -1069,7 +1068,11 @@ mod upload_filename_tests {
         .unwrap();
         assert_eq!(status.next_chunk, 0);
         assert_eq!(status.received_bytes, 0);
-        assert_eq!(tokio::fs::metadata(&status.filename).await.is_err(), true);
+        let handle = state.pending_uploads.read().await.get(&start.transfer_id).cloned().unwrap();
+        let temp_path = handle.inner.lock().await.temp_path.clone();
+        drop(handle);
+        let temp_metadata = tokio::fs::metadata(&temp_path).await.unwrap();
+        assert_eq!(temp_metadata.len(), 0, "invalid hashes must never write bytes to the temporary file");
 
         assert_eq!(
             cancel_chunked_upload(
