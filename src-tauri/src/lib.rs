@@ -1111,6 +1111,7 @@ mod upload_filename_tests {
         let Json(progress) = upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
+            Extension(super::UploadRequestPermit(Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()))),
             AxumPath((start.transfer_id.clone(), 0)),
             headers,
             Bytes::from(data.clone()),
@@ -1162,6 +1163,7 @@ mod upload_filename_tests {
         upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
+            Extension(super::UploadRequestPermit(Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()))),
             AxumPath((start.transfer_id.clone(), 0)),
             headers,
             Bytes::from(data),
@@ -1212,6 +1214,7 @@ mod upload_filename_tests {
         let error = upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
+            Extension(super::UploadRequestPermit(Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()))),
             AxumPath((start.transfer_id.clone(), 0)),
             headers,
             Bytes::from(data),
