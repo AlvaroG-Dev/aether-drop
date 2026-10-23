@@ -52,6 +52,14 @@ Estos valores son límites defensivos del prototipo, no cuotas de almacenamiento
 
 Para un transporte realmente seguro hace falta diseñar una identidad de servidor que el navegador móvil pueda verificar —no basta con añadir un certificado autofirmado— o pasar a un cliente móvil nativo con una estrategia de confianza de claves verificable. Solo entonces debe evaluarse si procede afirmar cifrado de extremo a extremo.
 
+## Cliente WebTransport experimental
+
+Esta rama incluye un cliente estático en `docs/aetherdrop-client.html` que intenta conectar directamente con el PC por WebTransport/HTTP/3 sobre UDP, usando la huella SHA-256 del certificado efímero antes de enviar el PIN. El cliente incluye lista de archivos, subida por bloques, descarga y portapapeles, y no utiliza HTTP como alternativa.
+
+**Esto aún no equivale a una versión verificada para uso real.** La CI comprueba sintaxis, tests de unidad, compilación y Clippy, pero no ejecuta un navegador móvil real ni valida el comportamiento de la red local, permisos del navegador, firewall/UDP, suspensión del móvil o transferencias grandes. El cliente es experimental; no lo uses para información confidencial ni interpretes el pinning como una auditoría de seguridad completa. La API HTTP/8080 heredada sigue existiendo y no debe considerarse cifrada.
+
+El enlace público de GitHub Pages solo incluirá estos archivos cuando se publique esta rama. No se debe fusionar a `master` únicamente porque la CI esté verde.
+
 ## Desarrollo
 
 Instala las dependencias del sistema para [Tauri 2](https://v2.tauri.app/start/prerequisites/), Rust y Node.js 22.
