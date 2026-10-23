@@ -245,8 +245,13 @@
               const length = Math.min(info.chunk_size, info.size_bytes - offset);
               const part = await client.request('download.read', { ticket: info.ticket, offset, length });
               if (!(part.payload instanceof Uint8Array) || part.payload.length !== length ||
-                  !part.result || part.result.offset !== offset || part.result.bytes !== length) {
+                  !part.result || part.result.offset !== offset || part.result.bytes !== length ||
+                  typeof part.result.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(part.result.sha256)) {
                 throw new Error('El bloque recibido no coincide con el rango esperado.');
+              }
+              const actualChunkHash = window.sha256.create().update(part.payload).hex();
+              if (actualChunkHash !== part.result.sha256) {
+                throw new Error('La integridad del bloque descargado no coincide; se ha cancelado la descarga.');
               }
               if (writable) await writable.write(part.payload);
               else chunks.push(part.payload);
