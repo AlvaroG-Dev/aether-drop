@@ -1689,7 +1689,7 @@ async fn reserve_upload_space(
 }
 
 fn release_reserved_upload_bytes(state: &AppState, amount: u64) {
-    let _ = state.reserved_upload_bytes.fetch_update(
+    let _ = state.reserved_upload_bytes.try_update(
         Ordering::AcqRel,
         Ordering::Acquire,
         |current| Some(current.saturating_sub(amount)),
@@ -2044,7 +2044,7 @@ async fn finish_chunked_upload(
     let transfer_cancellation = handle.cancellation.clone();
     let session_cancellation = session.cancellation.clone();
     let upload_inner = handle.inner.clone();
-    let mut upload = tokio::select! {
+    let upload = tokio::select! {
         biased;
         _ = shutdown_cancellation.cancelled() => {
             drop(handle);
@@ -2076,7 +2076,7 @@ async fn finish_chunked_upload(
     }
 
     let result: Result<UploadReceipt, (StatusCode, &'static str)> = async {
-        let mut sync_file = tokio::fs::OpenOptions::new()
+        let sync_file = tokio::fs::OpenOptions::new()
             .write(true)
             .open(&upload.temp_path)
             .await
