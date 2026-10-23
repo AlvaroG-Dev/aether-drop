@@ -1,6 +1,6 @@
 //! Experimental WebTransport endpoint with certificate pinning, device pairing,
-//! authenticated metadata operations, and bounded protocol framing. File transfer
-//! operations remain unavailable until their handlers and end-to-end tests are complete.
+//! authenticated metadata operations, bounded file transfer, and clipboard access.
+//! Automated tests cover dispatch primitives; real browser/device end-to-end validation remains pending.
 
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
 use super::{AppState, AuthorizedSession, ClipboardRequest, DownloadTicket, SessionRecord, UploadFinishRequest, UploadRequestPermit, UploadStartRequest, MAX_CLIPBOARD_BYTES, UPLOAD_CHUNK_BYTES};
@@ -30,6 +30,8 @@ pub struct WebTransportInfo {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PairRequest {
+    #[serde(default = "default_pair_protocol_version")]
+    version: u16,
     #[serde(rename = "type")]
     kind: String,
     pin: String,
@@ -164,6 +166,7 @@ pub async fn run(
                     let pair_request = serde_json::from_slice::<PairRequest>(&request_bytes).ok();
                     let valid = pair_request.as_ref().is_some_and(|request| {
                         request.kind == "pair"
+                            && request.version == super::webtransport_protocol::PROTOCOL_VERSION
                             && constant_time_eq(request.pin.as_bytes(), expected_pin.as_bytes())
                             && request.device_id.as_deref().map_or(true, valid_device_id)
                     });
@@ -327,6 +330,10 @@ pub async fn run(
             }
         }
     }
+}
+
+fn default_pair_protocol_version() -> u16 {
+    super::webtransport_protocol::PROTOCOL_VERSION
 }
 
 fn pair_request_is_probe_only(bytes: &[u8]) -> bool {
@@ -656,6 +663,9 @@ mod tests {
         assert!(pair_request_is_probe_only(br#"{"type":"pair","pin":"123456"}"#));
         assert!(!pair_request_is_probe_only(br#"{"type":"pair","pin":"123456","device_id":"dev_123"}"#));
         assert!(!pair_request_is_probe_only(br#"{"type":"nope","pin":"123456"}"#));
+        let wrong_version = br#"{"type":"pair","version":2,"pin":"123456"}"#;
+        let parsed = serde_json::from_slice::<PairRequest>(wrong_version).unwrap();
+        assert_ne!(parsed.version, super::super::webtransport_protocol::PROTOCOL_VERSION);
     }
 
     #[tokio::test]
