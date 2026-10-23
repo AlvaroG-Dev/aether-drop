@@ -9,7 +9,7 @@ use bytes::Bytes;
 use super::webtransport_protocol::ResponseHeader;
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
-use tokio::{sync::{oneshot, Mutex, Semaphore}, time::timeout};
+use tokio::{io::{AsyncReadExt, AsyncSeekExt}, sync::{oneshot, Mutex, Semaphore}, time::timeout};
 use tokio_util::sync::CancellationToken;
 use wtransport::{tls::Sha256DigestFmt, Endpoint, Identity, ServerConfig};
 
