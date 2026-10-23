@@ -7,6 +7,16 @@ const MAX_HEADER_BYTES = 64 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
+function withTimeout(promise, milliseconds, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 function hexBytes(hex) {
   if (!/^[a-fA-F0-9]{64}$/.test(hex)) throw new Error("Invalid SHA-256 certificate hash");
   return Uint8Array.from(hex.match(/../g), byte => Number.parseInt(byte, 16));
@@ -76,13 +86,13 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
     serverCertificateHashes: [{ algorithm: "sha-256", value: hexBytes(hash) }],
   });
   try {
-    await transport.ready;
+    await withTimeout(transport.ready, 10000, 'Timed out connecting to the PC');
     const stream = await transport.createBidirectionalStream();
     const writer = stream.writable.getWriter();
     const reader = stream.readable.getReader();
     await writer.write(encoder.encode(JSON.stringify({ type: "pair", pin, device_id: deviceId }) + "\n"));
     await writer.close();
-    const paired = await readJsonLine(reader);
+    const paired = await withTimeout(readJsonLine(reader), 10000, 'Timed out waiting for the pairing response');
     if (!paired.ok || paired.protocol !== "aetherdrop-webtransport-v1" ||
         typeof paired.token !== "string" || !/^[A-Za-z0-9]+$/.test(paired.token)) {
       throw new Error("Pairing was rejected or no session was issued");
@@ -113,10 +123,10 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
         }));
         if (body !== null) await requestWriter.write(body);
         await requestWriter.close();
-        const prefix = await responseReader.readExact(4);
+        const prefix = await withTimeout(responseReader.readExact(4), 30000, 'Timed out waiting for the response');
         const length = new DataView(prefix.buffer, prefix.byteOffset, 4).getUint32(0, false);
         if (!length || length > MAX_HEADER_BYTES) throw new Error("Invalid response header length");
-        const payload = await responseReader.readExact(length);
+        const payload = await withTimeout(responseReader.readExact(length), 30000, 'Timed out reading the response header');
         const response = JSON.parse(decoder.decode(payload));
         if (response.request_id !== requestId || response.version !== PROTOCOL_VERSION) {
           throw new Error("Response does not match the request");
@@ -128,7 +138,7 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
               response.payload_bytes > 8 * 1024 * 1024) {
             throw new Error("Response body exceeds the allowed chunk size");
           }
-          binary = await responseReader.readExact(response.payload_bytes);
+          binary = await withTimeout(responseReader.readExact(response.payload_bytes), 60000, 'Timed out reading the response body');
         }
         await responseReader.cancel().catch(() => {});
         return binary === null ? response.result : { result: response.result, payload: binary };
