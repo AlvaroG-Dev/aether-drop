@@ -766,14 +766,18 @@ mod tests {
             data: Some(serde_json::json!({"ticket": ticket, "offset": 6, "length": 5})),
         };
         let download_permit = state.download_slots.clone().try_acquire_owned().unwrap();
-        let (_, body) = dispatch_request(
+        let (read_metadata, body) = dispatch_request(
             &state,
             &read,
             None,
             None,
             Some(Arc::new(download_permit)),
         ).await.unwrap();
-        assert_eq!(body.unwrap(), b"world");
+        assert_eq!(body.as_ref().unwrap(), b"world");
+        assert_eq!(
+            read_metadata["sha256"].as_str(),
+            Some(&format!("{:x}", Sha256::digest(b"world")))
+        );
 
         use sha2::{Digest, Sha256};
         let start_upload = super::super::webtransport_protocol::RequestHeader {
