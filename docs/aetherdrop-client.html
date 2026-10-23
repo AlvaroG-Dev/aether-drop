@@ -37,7 +37,7 @@
   <p id="status" role="status" aria-live="polite">Introduce los datos de conexión que muestra AetherDrop.</p>
   <section id="shared" hidden>
     <h2>Archivos compartidos</h2>
-    <p class="muted">Esta versión solo muestra los archivos compartidos. Las transferencias aún no están habilitadas en este cliente.</p>
+    <p class="muted">Descargas directas por bloques WebTransport. En navegadores sin guardado por streaming, los archivos de más de 64 MiB se rechazan para evitar consumir demasiada memoria.</p>
     <ul id="files"></ul>
   </section>
 </main>
@@ -88,7 +88,61 @@
       fileList.replaceChildren();
       for (const file of files) {
         const item = document.createElement('li');
-        item.textContent = typeof file.name === 'string' ? file.name : 'Archivo sin nombre';
+        item.style.marginBottom = '12px';
+        const name = document.createElement('span');
+        name.textContent = typeof file.name === 'string' ? file.name : 'Archivo sin nombre';
+        item.append(name);
+        const download = document.createElement('button');
+        download.type = 'button';
+        download.textContent = 'Descargar';
+        download.style.marginTop = '6px';
+        download.addEventListener('click', async () => {
+          download.disabled = true;
+          try {
+            const info = await client.request('download.start', { file_id: file.id });
+            const canStreamToDisk = typeof window.showSaveFilePicker === 'function';
+            const blobLimit = 64 * 1024 * 1024;
+            if (!canStreamToDisk && info.size_bytes > blobLimit) {
+              throw new Error('Este navegador no permite guardar archivos grandes por bloques. Prueba Chrome o Chromium actualizado; no se ha descargado el archivo.');
+            }
+            let writable = null;
+            const chunks = [];
+            if (canStreamToDisk) {
+              const handle = await window.showSaveFilePicker({ suggestedName: info.name });
+              writable = await handle.createWritable();
+            }
+            let offset = 0;
+            while (offset < info.size_bytes) {
+              const length = Math.min(info.chunk_size, info.size_bytes - offset);
+              const part = await client.request('download.read', { ticket: info.ticket, offset, length });
+              if (!(part.payload instanceof Uint8Array) || part.payload.length !== length) {
+                throw new Error('El bloque recibido no coincide con el tamaño esperado.');
+              }
+              if (writable) await writable.write(part.payload);
+              else chunks.push(part.payload);
+              offset += part.payload.length;
+              download.textContent = Math.floor(offset * 100 / Math.max(1, info.size_bytes)) + '%';
+            }
+            if (writable) {
+              await writable.close();
+            } else {
+              const blob = new Blob(chunks, { type: 'application/octet-stream' });
+              const url = URL.createObjectURL(blob);
+              const anchor = document.createElement('a');
+              anchor.href = url;
+              anchor.download = info.name;
+              anchor.click();
+              setTimeout(() => URL.revokeObjectURL(url), 30000);
+            }
+            download.textContent = 'Descargado';
+          } catch (error) {
+            download.textContent = 'Reintentar';
+            showStatus('Descarga no completada: ' + String(error?.message || error), 'bad');
+          } finally {
+            download.disabled = false;
+          }
+        });
+        item.append(document.createElement('br'), download);
         fileList.append(item);
       }
       shared.hidden = false;
