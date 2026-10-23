@@ -25,7 +25,7 @@ button{width:100%;border:0;border-radius:12px;padding:14px;margin-top:14px;backg
   <input id="pin" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000">
   <button id="connect">Verificar conexión segura</button>
   <div id="status" role="status" aria-live="polite">Preparando comprobaciones…</div>
-  <p class="small">No hay fallback a HTTP. Si WebTransport, el acceso a la red local o la huella del certificado no son compatibles, la prueba falla.</p>
+  <p class="small">No hay fallback a HTTP. Si WebTransport, el acceso a la red local o la huella del certificado no son compatibles, la prueba falla. Esta página se publica por separado en GitHub Pages; la dirección local del PC solo se usa para el canal WebTransport.</p>
 </main>
 <script type="module">
 const status = document.getElementById('status');
