@@ -39,7 +39,7 @@ Common response fields:
 ## Implementation status
 
 - [x] Bounded length-prefixed JSON header framing and request validation.
-- [x] Pairing checks the PIN, validates an optional device ID, registers trusted devices within the existing device cap, and issues an expiring server-side session.
+- [x] Pairing checks the exact HTTPS origin and path, rejects non-LAN peers, rate-limits PIN failures, validates the device ID, enforces the trusted-device cap, and issues an expiring server-side session.
 - [x] Authenticated `session.check` and `files.list` dispatch over separate bidirectional streams.
 - [x] `upload.start`, `upload.status`, `upload.chunk`, `upload.finish`, and `upload.cancel`, routed through the existing hardened upload handlers.
 - [x] `download.start` and bounded binary `download.read` responses, with session/device-bound expiring tickets and the shared concurrent-download limit.
