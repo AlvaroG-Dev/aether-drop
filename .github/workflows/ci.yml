@@ -25,6 +25,8 @@ jobs:
         run: node scripts/check-webtransport-probe.cjs
       - name: Check WebTransport browser client syntax
         run: node --input-type=module --check < docs/aetherdrop-webtransport.js
+      - name: Check WebTransport browser UI syntax
+        run: node scripts/check-webtransport-client.cjs
       - name: Test SHA-256 browser implementation
         run: node scripts/test-sha256.cjs
       - name: Install Tauri Linux dependencies
