@@ -70,7 +70,7 @@ Unsupported operations return a stable error and must not be routed to the legac
 - Check session validity and cancellation between chunks and during long transfers.
 - Enforce global and per-device limits on concurrent streams, message sizes, and operation rates.
 - Use SHA-256 for integrity checks, not as a substitute for authenticated transport. Each download block carries a SHA-256 digest that the browser verifies before writing it; the browser rejects trailing bytes after both pairing and operation responses.
-- On interruption, keep resumable state only while its owning session remains valid and the configured TTL has not elapsed.
+- On interruption, keep resumable state only while its owning session remains valid and the configured TTL has not elapsed. The browser checks `upload.status` after a lost chunk response and retries only if the server confirms that the chunk was not committed; after a lost `upload.finish` response it verifies the completed receipt (filename, size, and whole-file SHA-256) before reporting success.
 
 ## Migration and acceptance criteria
 
