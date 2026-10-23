@@ -981,7 +981,7 @@ mod upload_filename_tests {
         is_lan_peer_address,
         finish_chunked_upload, handle_auth, is_allowed_local_authority, origin_matches_authority,
         publish_temp_no_replace, record_auth_failure, sanitize_upload_filename,
-        start_chunked_upload, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
+        start_chunked_upload, chunked_upload_status, upload_chunk, AppState, AuthFailureState, AuthorizedSession,
         DownloadTicket, PinRequest, SessionRecord, ServerStatus, UploadFinishRequest,
         UploadStartRequest,
         MAX_AUTH_FAILURES, MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_UPLOADS,
@@ -1040,6 +1040,8 @@ mod upload_filename_tests {
             server_status: Arc::new(RwLock::new(ServerStatus::Ready)),
             server_shutdown: CancellationToken::new(),
             mdns_daemon: Arc::new(Mutex::new(None)),
+            webtransport_info: Arc::new(RwLock::new(None)),
+            webtransport_error: Arc::new(RwLock::new(None)),
         };
         (state, session)
     }
