@@ -285,6 +285,14 @@ async fn read_request_header(
     let text = std::str::from_utf8(&json).map_err(|_| FrameError::InvalidUtf8)?;
     let header: RequestHeader = serde_json::from_str(text).map_err(|_| FrameError::InvalidJson)?;
     super::webtransport_protocol::validate_request(&header)?;
+    if header.payload_bytes.is_none() {
+        let mut extra = [0u8; 1];
+        match stream.read(&mut extra).await {
+            Ok(None) | Ok(Some(0)) => {}
+            Ok(Some(_)) => return Err(FrameError::InvalidLength),
+            Err(_) => return Err(FrameError::InvalidLength),
+        }
+    }
     Ok(header)
 }
 
