@@ -1,6 +1,6 @@
 # WebTransport file-transfer protocol
 
-Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser UI now downloads in bounded chunks. It uses the File System Access API to stream to disk where supported; browsers without that API are limited to files of 64 MiB or less to avoid buffering large files in memory. Clipboard operations and end-to-end browser testing remain pending. The browser probe remains a handshake diagnostic, not a file-transfer client.
+Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser UI now downloads in bounded chunks. It uses the File System Access API to stream to disk where supported; browsers without that API are limited to files of 64 MiB or less to avoid buffering large files in memory. End-to-end browser/desktop testing remains pending. The browser probe remains a handshake diagnostic, not a file-transfer client.
 
 ## Security invariants
 
@@ -43,7 +43,7 @@ Common response fields:
 - [x] Authenticated `session.check` and `files.list` dispatch over separate bidirectional streams.
 - [x] `upload.start`, `upload.status`, `upload.chunk`, `upload.finish`, and `upload.cancel`, routed through the existing hardened upload handlers.
 - [x] `download.start` and bounded binary `download.read` responses, with session/device-bound expiring tickets and the shared concurrent-download limit.
-- [ ] `clipboard.get` and `clipboard.set`.
+- [x] `clipboard.get` and `clipboard.set`, with a 1 MiB cap and binary UTF-8 payloads.
 - [ ] Browser UI using this transport end-to-end, plus integration tests against real browser/desktop builds.
 
 Unsupported operations return a stable error and must not be routed to the legacy HTTP endpoints as a fallback. Until the remaining items and the browser integration are complete and verified, this branch is development work and must not be presented as secure end-to-end file transfer.
