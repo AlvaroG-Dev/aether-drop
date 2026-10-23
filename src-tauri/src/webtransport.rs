@@ -213,6 +213,47 @@ pub async fn run(
                     response_bytes.push(b'\n');
                     let _ = send.write_all(&response_bytes).await;
                     let _ = send.finish().await;
+
+                    // The pinned QUIC connection remains alive after pairing. Each
+                    // application operation gets its own bounded bidirectional stream.
+                    if !valid || (!pair_request_is_probe_only(&request_bytes) && !session_issued) {
+                        return;
+                    }
+                    loop {
+                        let streams = match timeout(Duration::from_secs(120), connection.accept_bi()).await {
+                            Ok(Ok(streams)) => streams,
+                            _ => return,
+                        };
+                        let (mut response_stream, mut request_stream) = streams;
+                        let request_header = match timeout(Duration::from_secs(10), read_request_header(&mut request_stream)).await {
+                            Ok(Ok(header)) => header,
+                            _ => {
+                                let _ = response_stream.finish().await;
+                                continue;
+                            }
+                        };
+                        let result = dispatch_request(&state, &request_header).await;
+                        let response = match result {
+                            Ok(value) => ResponseHeader {
+                                version: super::webtransport_protocol::PROTOCOL_VERSION,
+                                request_id: request_header.request_id,
+                                ok: true,
+                                error: None,
+                                payload_bytes: None,
+                                result: Some(value),
+                            },
+                            Err(code) => ResponseHeader {
+                                version: super::webtransport_protocol::PROTOCOL_VERSION,
+                                request_id: request_header.request_id,
+                                ok: false,
+                                error: Some(code.to_owned()),
+                                payload_bytes: None,
+                                result: None,
+                            },
+                        };
+                        let _ = super::webtransport_protocol::write_header(&mut response_stream, &response).await;
+                        let _ = response_stream.finish().await;
+                    }
                 });
             }
         }
@@ -223,6 +264,70 @@ fn pair_request_is_probe_only(bytes: &[u8]) -> bool {
     serde_json::from_slice::<PairRequest>(bytes)
         .map(|request| request.device_id.is_none())
         .unwrap_or(false)
+}
+
+
+/// Read a single bounded framed JSON request header from a WebTransport stream.
+async fn read_request_header(
+    stream: &mut wtransport::RecvStream,
+) -> Result<super::webtransport_protocol::RequestHeader, super::webtransport_protocol::FrameError> {
+    use super::webtransport_protocol::{FrameError, RequestHeader, FRAME_PREFIX_BYTES, MAX_HEADER_BYTES};
+    let mut prefix = [0u8; FRAME_PREFIX_BYTES];
+    read_stream_exact(stream, &mut prefix).await?;
+    let length = u32::from_be_bytes(prefix) as usize;
+    if length == 0 { return Err(FrameError::Empty); }
+    if length > MAX_HEADER_BYTES { return Err(FrameError::TooLarge); }
+    let mut json = vec![0u8; length];
+    read_stream_exact(stream, &mut json).await?;
+    let text = std::str::from_utf8(&json).map_err(|_| FrameError::InvalidUtf8)?;
+    let header: RequestHeader = serde_json::from_str(text).map_err(|_| FrameError::InvalidJson)?;
+    super::webtransport_protocol::validate_request(&header)?;
+    Ok(header)
+}
+
+async fn read_stream_exact(
+    stream: &mut wtransport::RecvStream,
+    output: &mut [u8],
+) -> Result<(), super::webtransport_protocol::FrameError> {
+    use super::webtransport_protocol::FrameError;
+    let mut offset = 0;
+    while offset < output.len() {
+        match stream.read(&mut output[offset..]).await {
+            Ok(Some(0)) | Ok(None) | Err(_) => return Err(FrameError::InvalidLength),
+            Ok(Some(count)) => offset += count,
+        }
+    }
+    Ok(())
+}
+
+async fn dispatch_request(
+    state: &AppState,
+    request: &super::webtransport_protocol::RequestHeader,
+) -> Result<serde_json::Value, &'static str> {
+    use super::webtransport_protocol::validate_request;
+    validate_request(request).map_err(|_| "invalid_request")?;
+    let token = request.session.as_deref().ok_or("unauthorized")?;
+    let now = Instant::now();
+    let session = state.session_tokens.read().await.get(token).cloned().ok_or("unauthorized")?;
+    if session.expires_at <= now || session.cancellation.is_cancelled()
+        || !state.trusted_devices.read().await.contains(&session.device_id)
+    {
+        return Err("unauthorized");
+    }
+    match request.op.as_str() {
+        "session.check" => Ok(serde_json::json!({"valid": true, "expires_in": session.expires_at.saturating_duration_since(now).as_secs()})),
+        "files.list" => {
+            let files = state.pc_files.read().await;
+            let items: Vec<serde_json::Value> = files.iter().map(|(id, path)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": path.file_name().unwrap_or_default().to_string_lossy().to_string()
+                })
+            }).collect();
+            Ok(serde_json::Value::Array(items))
+        }
+        _ => Err("operation_not_implemented"),
+    }
 }
 
 fn valid_device_id(value: &str) -> bool {
