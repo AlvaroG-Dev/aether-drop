@@ -294,7 +294,7 @@ pub async fn run(
                             }, body),
                             Err(code) => (ResponseHeader {
                                 version: super::webtransport_protocol::PROTOCOL_VERSION,
-                                request_id: request_header.request_id,
+                                request_id: request_header.request_id.clone(),
                                 ok: false,
                                 error: Some(code.to_owned()),
                                 payload_bytes: None,
@@ -486,7 +486,7 @@ async fn dispatch_request(
             let mut headers = HeaderMap::new();
             headers.insert("x-chunk-sha256", sha256.parse::<HeaderValue>().map_err(|_| "invalid_request")?);
             let result = super::upload_chunk(State(state.clone()), Extension(authorized.clone()),
-                Extension(UploadRequestPermit { _permit: Arc::new(permit) }),
+                Extension(permit),
                 AxumPath((transfer_id.to_owned(), chunk_index)), headers, Bytes::from(body)).await;
             match result {
                 Ok(Json(value)) => Ok((serde_json::to_value(value).map_err(|_| "internal_error")?, None)),
