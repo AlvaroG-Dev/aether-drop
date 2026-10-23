@@ -93,7 +93,7 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
       session: paired.token,
       expiresIn: paired.expires_in,
       async request(op, data, body = null) {
-        if (!["session.check", "files.list", "download.start", "download.read", "upload.start", "upload.status", "upload.chunk", "upload.finish", "upload.cancel"].includes(op)) {
+        if (!["session.check", "files.list", "download.start", "download.read", "upload.start", "upload.status", "upload.chunk", "upload.finish", "upload.cancel", "clipboard.get", "clipboard.set"].includes(op)) {
           throw new Error("This WebTransport operation is not implemented yet");
         }
         const requestId = crypto.randomUUID().replace(/-/g, "");
