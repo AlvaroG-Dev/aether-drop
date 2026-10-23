@@ -1,6 +1,6 @@
 # WebTransport file-transfer protocol
 
-Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser probe remains a handshake diagnostic, not a file-transfer client.
+Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser client module can request bounded download chunks, but the current HTML UI only lists files and does not yet expose a complete save-to-disk workflow. The browser probe remains a handshake diagnostic, not a file-transfer client.
 
 ## Security invariants
 
@@ -42,7 +42,7 @@ Common response fields:
 - [x] Pairing checks the PIN, validates an optional device ID, registers trusted devices within the existing device cap, and issues an expiring server-side session.
 - [x] Authenticated `session.check` and `files.list` dispatch over separate bidirectional streams.
 - [ ] `upload.start`, `upload.status`, `upload.chunk`, `upload.finish`, and `upload.cancel`.
-- [ ] `download.start` and bounded binary `download.read` responses.
+- [x] `download.start` and bounded binary `download.read` responses, with session/device-bound expiring tickets and the shared concurrent-download limit.
 - [ ] `clipboard.get` and `clipboard.set`.
 - [ ] Browser UI using this transport end-to-end, plus integration tests against real browser/desktop builds.
 
