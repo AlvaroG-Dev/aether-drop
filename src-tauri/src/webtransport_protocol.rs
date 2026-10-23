@@ -7,6 +7,7 @@
 //! the operation handler before allocation or writing.
 
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_HEADER_BYTES: usize = 64 * 1024;
@@ -107,6 +108,57 @@ pub fn decode_header<T: for<'de> Deserialize<'de>>(frame: &[u8]) -> Result<T, Fr
     serde_json::from_str(json).map_err(|_| FrameError::InvalidJson)
 }
 
+/// Read exactly one length-prefixed JSON header from a stream without
+/// allocating from an unchecked peer-provided length.
+pub async fn read_header<R, T>(reader: &mut R) -> Result<T, FrameError>
+where
+    R: AsyncRead + Unpin,
+    T: for<'de> Deserialize<'de>,
+{
+    let mut prefix = [0u8; FRAME_PREFIX_BYTES];
+    reader.read_exact(&mut prefix).await.map_err(|_| FrameError::InvalidLength)?;
+    let length = u32::from_be_bytes(prefix) as usize;
+    if length == 0 {
+        return Err(FrameError::Empty);
+    }
+    if length > MAX_HEADER_BYTES {
+        return Err(FrameError::TooLarge);
+    }
+    let mut json = vec![0u8; length];
+    reader.read_exact(&mut json).await.map_err(|_| FrameError::InvalidLength)?;
+    let text = std::str::from_utf8(&json).map_err(|_| FrameError::InvalidUtf8)?;
+    serde_json::from_str(text).map_err(|_| FrameError::InvalidJson)
+}
+
+/// Write one bounded length-prefixed JSON header and flush it to the stream.
+pub async fn write_header<W, T>(writer: &mut W, header: &T) -> Result<(), FrameError>
+where
+    W: AsyncWrite + Unpin,
+    T: Serialize,
+{
+    let frame = encode_header(header)?;
+    writer.write_all(&frame).await.map_err(|_| FrameError::InvalidLength)?;
+    writer.flush().await.map_err(|_| FrameError::InvalidLength)
+}
+
+/// Read an exact binary body, enforcing both the operation's cap and the
+/// caller-provided expected length before allocating any memory.
+pub async fn read_bounded_payload<R>(
+    reader: &mut R,
+    expected_bytes: u64,
+    max_bytes: u64,
+) -> Result<Vec<u8>, FrameError>
+where
+    R: AsyncRead + Unpin,
+{
+    if expected_bytes > max_bytes || expected_bytes > usize::MAX as u64 {
+        return Err(FrameError::InvalidLength);
+    }
+    let mut payload = vec![0u8; expected_bytes as usize];
+    reader.read_exact(&mut payload).await.map_err(|_| FrameError::InvalidLength)?;
+    Ok(payload)
+}
+
 pub fn validate_request(header: &RequestHeader) -> Result<(), FrameError> {
     if header.version != PROTOCOL_VERSION {
         return Err(FrameError::UnsupportedVersion);
@@ -165,6 +217,28 @@ mod tests {
             session: Some("opaque-token".to_owned()),
             payload_bytes: None,
         }
+    }
+
+    #[tokio::test]
+    async fn stream_header_round_trip_uses_bounded_framing() {
+        let (mut tx, mut rx) = tokio::io::duplex(256);
+        let expected = valid_request();
+        let send = async {
+            write_header(&mut tx, &expected).await.unwrap();
+        };
+        let receive = async {
+            let actual: RequestHeader = read_header(&mut rx).await.unwrap();
+            assert_eq!(actual, expected);
+        };
+        tokio::join!(send, receive);
+    }
+
+    #[tokio::test]
+    async fn bounded_payload_rejects_oversize_before_reading() {
+        let (mut tx, mut rx) = tokio::io::duplex(32);
+        tx.write_all(b"payload").await.unwrap();
+        let error = read_bounded_payload(&mut rx, 9, 8).await.unwrap_err();
+        assert_eq!(error, FrameError::InvalidLength);
     }
 
     #[test]
