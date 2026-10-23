@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn webtransport_download_reads_only_the_requested_bounded_range() {
+    async fn webtransport_dispatch_supports_bounded_upload_and_download_chunks() {
         let dir = std::env::temp_dir().join(format!("aetherdrop-wt-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let path = dir.join("hello.txt");
