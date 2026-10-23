@@ -256,6 +256,11 @@ pub async fn run(
                         } else {
                             None
                         };
+                        let download_request_permit = if request_header.op == "download.read" {
+                            state.download_slots.clone().try_acquire_owned().ok().map(Arc::new)
+                        } else {
+                            None
+                        };
                         let request_body = if let Some(length) = request_header.payload_bytes {
                             let cap = if request_header.op == "clipboard.set" { super::MAX_CLIPBOARD_BYTES as u64 } else { UPLOAD_CHUNK_BYTES as u64 };
                             if length > cap || (request_header.op == "upload.chunk" && upload_request_permit.is_none()) {
@@ -272,7 +277,7 @@ pub async fn run(
                         } else {
                             None
                         };
-                        let result = dispatch_request(&state, &request_header, request_body, upload_request_permit).await;
+                        let result = dispatch_request(&state, &request_header, request_body, upload_request_permit, download_request_permit.clone()).await;
                         let (response, response_body) = match result {
                             Ok((value, body)) => (ResponseHeader {
                                 version: super::webtransport_protocol::PROTOCOL_VERSION,
@@ -403,6 +408,7 @@ async fn dispatch_request(
     request: &super::webtransport_protocol::RequestHeader,
     body: Option<Vec<u8>>,
     upload_request_permit: Option<UploadRequestPermit>,
+    download_request_permit: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
 ) -> Result<(serde_json::Value, Option<Vec<u8>>), &'static str> {
     use super::webtransport_protocol::validate_request;
     validate_request(request).map_err(|_| "invalid_request")?;
@@ -554,7 +560,7 @@ async fn dispatch_request(
             }), None))
         }
         "download.read" => {
-            let _download_permit = state.download_slots.clone().try_acquire_owned().map_err(|_| "too_many_downloads")?;
+            let _download_permit = download_request_permit.ok_or("too_many_downloads")?;
             let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
             if data.len() != 3 { return Err("invalid_request"); }
             let ticket_token = data.get("ticket").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
@@ -688,7 +694,7 @@ mod tests {
             payload_bytes: None,
             data: Some(serde_json::json!({"file_id": "file1"})),
         };
-        let (metadata, _) = dispatch_request(&state, &start, None, None).await.unwrap();
+        let (metadata, _) = dispatch_request(&state, &start, None, None, None).await.unwrap();
         let ticket = metadata["ticket"].as_str().unwrap().to_owned();
         assert_eq!(metadata["size_bytes"].as_u64(), Some(11));
 
@@ -700,7 +706,7 @@ mod tests {
             payload_bytes: None,
             data: Some(serde_json::json!({"ticket": ticket, "offset": 6, "length": 5})),
         };
-        let (_, body) = dispatch_request(&state, &read, None, None).await.unwrap();
+        let (_, body) = dispatch_request(&state, &read, None, None, None).await.unwrap();
         assert_eq!(body.unwrap(), b"world");
 
         use sha2::{Digest, Sha256};
@@ -712,7 +718,7 @@ mod tests {
             payload_bytes: None,
             data: Some(serde_json::json!({"filename": "uploaded.txt", "size_bytes": 5})),
         };
-        let (upload_metadata, _) = dispatch_request(&state, &start_upload, None, None).await.unwrap();
+        let (upload_metadata, _) = dispatch_request(&state, &start_upload, None, None, None).await.unwrap();
         let transfer_id = upload_metadata["transfer_id"].as_str().unwrap().to_owned();
         let hash = format!("{:x}", Sha256::digest(b"world"));
         let upload_chunk = super::super::webtransport_protocol::RequestHeader {
@@ -733,6 +739,7 @@ mod tests {
             &upload_chunk,
             Some(b"world".to_vec()),
             Some(UploadRequestPermit { _permit: Arc::new(permit) }),
+            None,
         ).await.unwrap();
         let finish_upload = super::super::webtransport_protocol::RequestHeader {
             version: super::super::webtransport_protocol::PROTOCOL_VERSION,
@@ -745,7 +752,7 @@ mod tests {
                 "sha256": hash,
             })),
         };
-        let (receipt, _) = dispatch_request(&state, &finish_upload, None, None).await.unwrap();
+        let (receipt, _) = dispatch_request(&state, &finish_upload, None, None, None).await.unwrap();
         assert_eq!(receipt["files"][0]["filename"], "uploaded.txt");
         assert_eq!(tokio::fs::read(dir.join("uploaded.txt")).await.unwrap(), b"world");
 
