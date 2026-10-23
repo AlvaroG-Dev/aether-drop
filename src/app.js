@@ -56,35 +56,11 @@
       });
     }
     async function fitWindowToContent() {
-      if (!currentWindow || fitRunning) return;
-      fitRunning = true;
-      try {
-        const app = document.querySelector(".app");
-        if (!app) return;
-        const scale = await currentWindow.scaleFactor();
-        const monitor = await currentWindow.currentMonitor();
-        const screenHeight = monitor ? monitor.size.height / scale : window.screen.availHeight;
-        const maxHeight = Math.max(520, Math.floor(Math.min(screenHeight, window.screen.availHeight) - 36));
-        let desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
-        document.body.classList.toggle("ultra-compact", desired > maxHeight);
-        await new Promise(resolve => requestAnimationFrame(resolve));
-        desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
-        // If the first compact pass still exceeds the monitor, apply the denser
-        // layout before clamping the native window size.
-        if (desired > maxHeight && !document.body.classList.contains("ultra-compact")) {
-          document.body.classList.add("ultra-compact");
-          await new Promise(resolve => requestAnimationFrame(resolve));
-          desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
-        }
-        const targetHeight = Math.max(520, Math.min(Math.ceil(desired), maxHeight));
-        const inner = await currentWindow.innerSize();
-        const targetWidth = Math.max(640, Math.min(Math.ceil(inner.width / scale), 840, Math.floor(window.screen.availWidth - 24)));
-        const LogicalSize = window.__TAURI__?.dpi?.LogicalSize;
-        if (!LogicalSize) throw new Error("No está disponible LogicalSize en Tauri.");
-        if (Math.abs(inner.height / scale - targetHeight) > 18 || Math.abs(inner.width / scale - targetWidth) > 18) {
-          await currentWindow.setSize(new LogicalSize(targetWidth, targetHeight));
-        }
-      } finally { fitRunning = false; }
+      // Never resize the native window in response to content measurements:
+      // that fought manual resizing and clipped content on short windows.
+      const app = document.querySelector(".app");
+      if (!app) return;
+      document.body.classList.toggle("ultra-compact", app.clientHeight < 560);
     }
     const appResizeObserver = new ResizeObserver(scheduleWindowFit);
     appResizeObserver.observe(document.querySelector(".app"));
