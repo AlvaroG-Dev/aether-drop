@@ -238,23 +238,31 @@ pub async fn run(
                                 continue;
                             }
                         };
+                        // Acquire before reading an 8 MiB upload body so concurrent
+                        // streams cannot bypass the HTTP path's memory bound.
+                        let upload_request_permit = if request_header.op == "upload.chunk" {
+                            state.upload_slots.clone().try_acquire_owned().ok()
+                                .map(|permit| UploadRequestPermit { _permit: Arc::new(permit) })
+                        } else {
+                            None
+                        };
                         let request_body = if let Some(length) = request_header.payload_bytes {
                             let cap = if request_header.op == "clipboard.set" { super::MAX_CLIPBOARD_BYTES as u64 } else { UPLOAD_CHUNK_BYTES as u64 };
-                            if length > cap {
-                                let _ = response_stream.finish().await;
-                                continue;
-                            }
-                            match timeout(Duration::from_secs(30), read_stream_payload(&mut request_stream, length, cap)).await {
-                                Ok(Ok(body)) => Some(body),
-                                _ => {
-                                    let _ = response_stream.finish().await;
-                                    continue;
+                            if length > cap || (request_header.op == "upload.chunk" && upload_request_permit.is_none()) {
+                                None
+                            } else {
+                                match timeout(Duration::from_secs(30), read_stream_payload(&mut request_stream, length, cap)).await {
+                                    Ok(Ok(body)) => Some(body),
+                                    _ => {
+                                        let _ = response_stream.finish().await;
+                                        continue;
+                                    }
                                 }
                             }
                         } else {
                             None
                         };
-                        let result = dispatch_request(&state, &request_header, request_body).await;
+                        let result = dispatch_request(&state, &request_header, request_body, upload_request_permit).await;
                         let (response, response_body) = match result {
                             Ok((value, body)) => (ResponseHeader {
                                 version: super::webtransport_protocol::PROTOCOL_VERSION,
@@ -370,6 +378,7 @@ async fn dispatch_request(
     state: &AppState,
     request: &super::webtransport_protocol::RequestHeader,
     body: Option<Vec<u8>>,
+    upload_request_permit: Option<UploadRequestPermit>,
 ) -> Result<(serde_json::Value, Option<Vec<u8>>), &'static str> {
     use super::webtransport_protocol::validate_request;
     validate_request(request).map_err(|_| "invalid_request")?;
@@ -438,7 +447,7 @@ async fn dispatch_request(
             let chunk_index = data.get("chunk_index").and_then(serde_json::Value::as_u64).ok_or("invalid_request")?;
             let sha256 = data.get("sha256").and_then(serde_json::Value::as_str).filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).ok_or("invalid_request")?;
             let body = body.ok_or("invalid_request")?;
-            let permit = state.upload_slots.clone().try_acquire_owned().map_err(|_| "too_many_requests")?;
+            let permit = upload_request_permit.ok_or("too_many_requests")?;
             let mut headers = HeaderMap::new();
             headers.insert("x-chunk-sha256", sha256.parse::<HeaderValue>().map_err(|_| "invalid_request")?);
             let result = super::upload_chunk(State(state.clone()), Extension(authorized.clone()),
@@ -655,7 +664,7 @@ mod tests {
             payload_bytes: None,
             data: Some(serde_json::json!({"file_id": "file1"})),
         };
-        let (metadata, _) = dispatch_request(&state, &start, None).await.unwrap();
+        let (metadata, _) = dispatch_request(&state, &start, None, None).await.unwrap();
         let ticket = metadata["ticket"].as_str().unwrap().to_owned();
         assert_eq!(metadata["size_bytes"].as_u64(), Some(11));
 
@@ -667,7 +676,7 @@ mod tests {
             payload_bytes: None,
             data: Some(serde_json::json!({"ticket": ticket, "offset": 6, "length": 5})),
         };
-        let (_, body) = dispatch_request(&state, &read, None).await.unwrap();
+        let (_, body) = dispatch_request(&state, &read, None, None).await.unwrap();
         assert_eq!(body.unwrap(), b"world");
         tokio::fs::remove_file(path).await.unwrap();
         tokio::fs::remove_dir_all(dir).await.unwrap();
