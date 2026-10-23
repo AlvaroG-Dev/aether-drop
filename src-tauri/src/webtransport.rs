@@ -9,6 +9,7 @@ use bytes::Bytes;
 use super::webtransport_protocol::ResponseHeader;
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::{io::{AsyncReadExt, AsyncSeekExt}, sync::{oneshot, Mutex, Semaphore}, time::timeout};
 use tokio_util::sync::CancellationToken;
 use wtransport::{tls::Sha256DigestFmt, Endpoint, Identity, ServerConfig};
@@ -654,7 +655,12 @@ async fn dispatch_request(
             file.seek(std::io::SeekFrom::Start(offset)).await.map_err(|_| "file_unavailable")?;
             let mut body = vec![0u8; length as usize];
             file.read_exact(&mut body).await.map_err(|_| "file_changed")?;
-            Ok((serde_json::json!({"offset": offset, "bytes": length}), Some(body)))
+            let chunk_sha256 = format!("{:x}", Sha256::digest(&body));
+            Ok((serde_json::json!({
+                "offset": offset,
+                "bytes": length,
+                "sha256": chunk_sha256
+            }), Some(body)))
         }
         _ => Err("operation_not_implemented"),
     }
