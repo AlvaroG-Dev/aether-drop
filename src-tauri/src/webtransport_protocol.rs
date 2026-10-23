@@ -189,7 +189,7 @@ pub fn validate_request(header: &RequestHeader) -> Result<(), FrameError> {
     if header.session.as_deref().map_or(true, |session| {
         session.is_empty() || session.len() > 256 || !session.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     }) {
-        return Err(FrameError::InvalidRequestId);
+        return Err(FrameError::InvalidSession);
     }
     // Transfers are chunked: a single WebTransport frame must never carry a
     // whole multi-gigabyte file. Keep this in sync with the desktop upload chunk
