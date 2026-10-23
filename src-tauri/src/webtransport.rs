@@ -285,6 +285,15 @@ pub async fn run(
                         } else {
                             None
                         };
+                        // One operation per stream: require the peer to finish the
+                        // request stream and reject bytes beyond the declared payload.
+                        if !matches!(
+                            timeout(Duration::from_secs(5), ensure_stream_eof(&mut request_stream)).await,
+                            Ok(Ok(()))
+                        ) {
+                            let _ = response_stream.finish().await;
+                            continue;
+                        }
                         let result = dispatch_request(&state, &request_header, request_body, upload_request_permit, download_request_permit.clone()).await;
                         let (response, response_body) = match result {
                             Ok((value, body)) => (ResponseHeader {
@@ -342,6 +351,15 @@ fn pair_request_is_probe_only(bytes: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
+
+/// Ensure the peer closed its send side exactly after the declared request body.
+async fn ensure_stream_eof(stream: &mut wtransport::RecvStream) -> Result<(), ()> {
+    let mut extra = [0u8; 1];
+    match stream.read(&mut extra).await {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) | Err(_) => Err(()),
+    }
+}
 
 /// Read a single bounded framed JSON request header from a WebTransport stream.
 async fn read_request_header(
