@@ -326,6 +326,14 @@ mod tests {
         assert!(validate_request(&request).is_ok());
         request.op = "files.list".to_owned();
         assert!(matches!(validate_request(&request), Err(FrameError::InvalidLength)));
+        request.payload_bytes = None;
+        request.op = "clipboard.set".to_owned();
+        assert!(matches!(validate_request(&request), Err(FrameError::InvalidLength)));
+        request.payload_bytes = Some(128);
+        assert!(validate_request(&request).is_ok());
+        request.op = "download.read".to_owned();
+        request.payload_bytes = None;
+        assert!(validate_request(&request).is_ok());
     }
 
     #[test]
