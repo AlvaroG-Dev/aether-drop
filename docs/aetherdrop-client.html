@@ -212,8 +212,8 @@
         try {
             const canStreamToDisk = typeof window.showSaveFilePicker === 'function';
             // Invoke the picker before network awaits to preserve user activation.
-            const fileHandlePromise = canStreamToDisk
-              ? window.showSaveFilePicker({ suggestedName: file.name })
+            const fileHandle = canStreamToDisk
+              ? await window.showSaveFilePicker({ suggestedName: file.name })
               : null;
             const info = await client.request('download.start', { file_id: file.id });
             const blobLimit = 64 * 1024 * 1024;
@@ -223,8 +223,7 @@
             let writable = null;
             const chunks = [];
             if (canStreamToDisk) {
-              const handle = await fileHandlePromise;
-              writable = await handle.createWritable();
+              writable = await fileHandle.createWritable();
               activeWritable = writable;
             }
             let offset = 0;
