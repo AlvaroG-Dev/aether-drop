@@ -48,6 +48,10 @@ Common response fields:
 
 Unsupported operations return a stable error and must not be routed to the legacy HTTP endpoints as a fallback. Until the remaining items and the browser integration are complete and verified, this branch is development work and must not be presented as secure end-to-end file transfer.
 
+### Browser client module
+
+`docs/aetherdrop-webtransport.js` exposes `connectAetherDrop({ host, hash, pin, deviceId })`. It opens WebTransport with SHA-256 certificate pinning, pairs over the existing bounded newline handshake, and returns a session-bound client whose `request()` currently permits only `session.check` and `files.list`. It rejects unsupported operations locally and never falls back to HTTP. This module is a transport building block, not yet the complete mobile UI.
+
 ## Required operations
 
 - `session.check`: verify that the session exists, is unexpired, and has not been revoked.
