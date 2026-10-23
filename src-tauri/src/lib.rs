@@ -29,6 +29,7 @@ use mdns_sd::{ServiceDaemon, ServiceInfo};
 use arboard::Clipboard;
 
 mod webtransport;
+pub mod webtransport_protocol;
 
 const MAX_UPLOAD_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_CONCURRENT_UPLOADS: usize = 3;
