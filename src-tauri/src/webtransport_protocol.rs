@@ -141,7 +141,7 @@ pub fn validate_request(header: &RequestHeader) -> Result<(), FrameError> {
     // whole multi-gigabyte file. Keep this in sync with the desktop upload chunk
     // limit (8 MiB); larger files use multiple independently validated requests.
     const MAX_BINARY_FRAME_BYTES: u64 = 8 * 1024 * 1024;
-    let binary_operation = matches!(header.op.as_str(), "upload.chunk" | "download.read");
+    let binary_operation = matches!(header.op.as_str(), "upload.chunk" | "clipboard.set");
     if binary_operation != header.payload_bytes.is_some() {
         return Err(FrameError::InvalidLength);
     }
