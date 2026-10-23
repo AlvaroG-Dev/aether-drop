@@ -198,12 +198,13 @@ pub async fn run(
                             entry.1 = now;
                         }
                     }
-                    let response = if valid {
+                    let session_issued = issued_token.is_some();
+                    let response = if valid && (pair_request_is_probe_only(&request_bytes) || session_issued) {
                         serde_json::json!({
                             "ok": true,
                             "protocol": "aetherdrop-webtransport-v1",
                             "token": issued_token,
-                            "expires_in": if issued_token.is_some() { super::SESSION_TTL.as_secs() } else { 0 }
+                            "expires_in": if session_issued { super::SESSION_TTL.as_secs() } else { 0 }
                         })
                     } else {
                         serde_json::json!({"ok": false, "error": "pairing_rejected"})
@@ -216,6 +217,12 @@ pub async fn run(
             }
         }
     }
+}
+
+fn pair_request_is_probe_only(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<PairRequest>(bytes)
+        .map(|request| request.device_id.is_none())
+        .unwrap_or(false)
 }
 
 fn valid_device_id(value: &str) -> bool {
