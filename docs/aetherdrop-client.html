@@ -210,8 +210,12 @@
           download.disabled = true;
           let activeWritable = null;
         try {
-            const info = await client.request('download.start', { file_id: file.id });
             const canStreamToDisk = typeof window.showSaveFilePicker === 'function';
+            // Invoke the picker before network awaits to preserve user activation.
+            const fileHandlePromise = canStreamToDisk
+              ? window.showSaveFilePicker({ suggestedName: file.name })
+              : null;
+            const info = await client.request('download.start', { file_id: file.id });
             const blobLimit = 64 * 1024 * 1024;
             if (!canStreamToDisk && info.size_bytes > blobLimit) {
               throw new Error('Este navegador no permite guardar archivos grandes por bloques. Prueba Chrome o Chromium actualizado; no se ha descargado el archivo.');
@@ -219,7 +223,7 @@
             let writable = null;
             const chunks = [];
             if (canStreamToDisk) {
-              const handle = await window.showSaveFilePicker({ suggestedName: info.name });
+              const handle = await fileHandlePromise;
               writable = await handle.createWritable();
               activeWritable = writable;
             }
