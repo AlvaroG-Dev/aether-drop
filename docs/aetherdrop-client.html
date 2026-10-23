@@ -39,8 +39,14 @@
     <h2>Archivos compartidos</h2>
     <p class="muted">Descargas directas por bloques WebTransport. En navegadores sin guardado por streaming, los archivos de más de 64 MiB se rechazan para evitar consumir demasiada memoria.</p>
     <ul id="files"></ul>
+    <h2>Enviar archivo al PC</h2>
+    <label for="uploadFile">Archivo (máximo 2 GiB)</label>
+    <input id="uploadFile" type="file">
+    <button id="uploadButton" type="button">Enviar al PC</button>
+    <p id="transferStatus" class="muted" role="status" aria-live="polite"></p>
   </section>
 </main>
+<script src="./sha256.js"></script>
 <script type="module">
   import { connectAetherDrop } from './aetherdrop-webtransport.js';
   const params = new URLSearchParams(location.search);
@@ -52,6 +58,9 @@
   const status = document.querySelector('#status');
   const shared = document.querySelector('#shared');
   const fileList = document.querySelector('#files');
+  const uploadInput = document.querySelector('#uploadFile');
+  const uploadButton = document.querySelector('#uploadButton');
+  const transferStatus = document.querySelector('#transferStatus');
   hostInput.value = params.get('host') || '';
   hashInput.value = params.get('hash') || '';
   const deviceKey = 'aetherdrop_device_id';
@@ -66,6 +75,55 @@
     status.textContent = message;
     status.className = type;
   }
+  uploadButton.addEventListener('click', async () => {
+    const file = uploadInput.files && uploadInput.files[0];
+    if (!client) { showStatus('Conecta primero con el PC.', 'bad'); return; }
+    if (!file) { transferStatus.textContent = 'Selecciona un archivo.'; return; }
+    if (file.size === 0 || file.size > 2 * 1024 * 1024 * 1024) {
+      transferStatus.textContent = 'El archivo debe tener un tamaño entre 1 byte y 2 GiB.';
+      return;
+    }
+    uploadButton.disabled = true;
+    let transferId = null;
+    try {
+      transferStatus.textContent = 'Preparando transferencia…';
+      const start = await client.request('upload.start', { filename: file.name, size_bytes: file.size });
+      transferId = start.transfer_id;
+      const wholeHash = window.sha256.create();
+      let offset = 0;
+      let chunkIndex = 0;
+      while (offset < file.size) {
+        const buffer = await file.slice(offset, Math.min(file.size, offset + start.chunk_size)).arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        wholeHash.update(bytes);
+        const chunkHash = window.sha256.create().update(bytes).hex();
+        await client.request('upload.chunk', {
+          transfer_id: transferId,
+          chunk_index: chunkIndex,
+          sha256: chunkHash,
+        }, bytes);
+        offset += bytes.length;
+        chunkIndex += 1;
+        transferStatus.textContent = 'Enviando… ' + Math.floor(offset * 100 / file.size) + '%';
+      }
+      transferStatus.textContent = 'Verificando el archivo completo…';
+      const finished = await client.request('upload.finish', {
+        transfer_id: transferId,
+        sha256: wholeHash.hex(),
+      });
+      transferId = null;
+      transferStatus.textContent = 'Archivo recibido y verificado: ' + file.name;
+      uploadInput.value = '';
+      await refreshFiles();
+    } catch (error) {
+      if (transferId && client) {
+        await client.request('upload.cancel', { transfer_id: transferId }).catch(() => {});
+      }
+      transferStatus.textContent = 'No se completó la subida: ' + String(error?.message || error);
+    } finally {
+      uploadButton.disabled = false;
+    }
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     button.disabled = true;
@@ -80,10 +138,22 @@
         deviceId,
       });
       showStatus('Canal cifrado validado. Consultando la lista de archivos…');
-      const [session, files] = await Promise.all([
-        client.request('session.check'),
-        client.request('files.list'),
-      ]);
+      const session = await client.request('session.check');
+      await refreshFiles();
+      shared.hidden = false;
+      showStatus('Conexión segura establecida. Sesión válida durante aproximadamente ' +
+        Math.max(0, Math.floor(session.expires_in / 60)) + ' minutos.\nYa puedes descargar archivos compartidos o enviar archivos al PC.', 'ok');
+    } catch (error) {
+      if (client) { client.close(); client = null; }
+      showStatus('No se pudo establecer una sesión segura.\n' +
+        String(error?.message || error) + '\nNo se ha intentado HTTP como alternativa.', 'bad');
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  async function refreshFiles() {
+      const files = await client.request('files.list');
       if (!Array.isArray(files)) throw new Error('Respuesta de lista de archivos no válida');
       fileList.replaceChildren();
       for (const file of files) {
@@ -149,17 +219,7 @@
         item.append(document.createElement('br'), download);
         fileList.append(item);
       }
-      shared.hidden = false;
-      showStatus('Conexión segura establecida. Sesión válida durante aproximadamente ' +
-        Math.max(0, Math.floor(session.expires_in / 60)) + ' minutos.\nNo se han transferido archivos.', 'ok');
-    } catch (error) {
-      if (client) { client.close(); client = null; }
-      showStatus('No se pudo establecer una sesión segura.\n' +
-        String(error?.message || error) + '\nNo se ha intentado HTTP como alternativa.', 'bad');
-    } finally {
-      button.disabled = false;
-    }
-  });
+  }
 </script>
 </body>
 </html>
