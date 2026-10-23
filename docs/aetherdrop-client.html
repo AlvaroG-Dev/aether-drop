@@ -98,7 +98,8 @@
         download.style.marginTop = '6px';
         download.addEventListener('click', async () => {
           download.disabled = true;
-          try {
+          let activeWritable = null;
+        try {
             const info = await client.request('download.start', { file_id: file.id });
             const canStreamToDisk = typeof window.showSaveFilePicker === 'function';
             const blobLimit = 64 * 1024 * 1024;
@@ -110,6 +111,7 @@
             if (canStreamToDisk) {
               const handle = await window.showSaveFilePicker({ suggestedName: info.name });
               writable = await handle.createWritable();
+              activeWritable = writable;
             }
             let offset = 0;
             while (offset < info.size_bytes) {
@@ -125,6 +127,7 @@
             }
             if (writable) {
               await writable.close();
+              activeWritable = null;
             } else {
               const blob = new Blob(chunks, { type: 'application/octet-stream' });
               const url = URL.createObjectURL(blob);
@@ -136,6 +139,7 @@
             }
             download.textContent = 'Descargado';
           } catch (error) {
+            if (activeWritable) await activeWritable.abort().catch(() => {});
             download.textContent = 'Reintentar';
             showStatus('Descarga no completada: ' + String(error?.message || error), 'bad');
           } finally {
