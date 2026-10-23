@@ -3,6 +3,7 @@
 //! routed through this endpoint until end-to-end tests have passed.
 
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
+use super::{AppState, SessionRecord};
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::{oneshot, Mutex, Semaphore}, time::timeout};
@@ -28,13 +29,16 @@ struct PairRequest {
     #[serde(rename = "type")]
     kind: String,
     pin: String,
+    #[serde(default)]
+    device_id: Option<String>,
 }
 
 pub async fn run(
-    pin: String,
+    state: AppState,
     shutdown: CancellationToken,
     ready: oneshot::Sender<Result<WebTransportInfo, String>>,
 ) {
+    let pin = state.pin.clone();
     let ip = match local_ip() {
         Ok(IpAddr::V4(ip)) => ip,
         Ok(IpAddr::V6(_)) => {
@@ -84,6 +88,7 @@ pub async fn run(
             _ = shutdown.cancelled() => break,
             incoming = endpoint.accept() => {
                 let expected_pin = pin.clone();
+                let state = state.clone();
                 let auth_failures = auth_failures.clone();
                 let handshake_slots = handshake_slots.clone();
                 tokio::spawn(async move {
@@ -148,11 +153,40 @@ pub async fn run(
                         }
                     };
                     let _permit = permit;
-                    let valid = serde_json::from_slice::<PairRequest>(&request_bytes)
-                        .map(|request| request.kind == "pair" && constant_time_eq(request.pin.as_bytes(), expected_pin.as_bytes()))
-                        .unwrap_or(false);
+                    let pair_request = serde_json::from_slice::<PairRequest>(&request_bytes).ok();
+                    let valid = pair_request.as_ref().is_some_and(|request| {
+                        request.kind == "pair"
+                            && constant_time_eq(request.pin.as_bytes(), expected_pin.as_bytes())
+                            && request.device_id.as_deref().map_or(true, valid_device_id)
+                    });
+                    let mut issued_token: Option<String> = None;
                     if valid {
                         auth_failures.lock().await.remove(&remote_ip);
+                        if let Some(device_id) = pair_request.and_then(|request| request.device_id) {
+                            let mut devices = state.trusted_devices.write().await;
+                            if !devices.contains(&device_id) && devices.len() < super::MAX_TRUSTED_DEVICES {
+                                devices.push(device_id.clone());
+                            }
+                            if devices.contains(&device_id) {
+                                let now = Instant::now();
+                                let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+                                let mut sessions = state.session_tokens.write().await;
+                                sessions.retain(|_, session| {
+                                    if session.device_id == device_id {
+                                        session.cancellation.cancel();
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                });
+                                sessions.insert(token.clone(), SessionRecord {
+                                    device_id,
+                                    expires_at: now + super::SESSION_TTL,
+                                    cancellation: CancellationToken::new(),
+                                });
+                                issued_token = Some(token);
+                            }
+                        }
                     } else {
                         let now = Instant::now();
                         let mut failures = auth_failures.lock().await;
@@ -164,17 +198,30 @@ pub async fn run(
                             entry.1 = now;
                         }
                     }
-                    let response: &[u8] = if valid {
-                        b"{\"ok\":true,\"protocol\":\"aetherdrop-webtransport-v1\"}\n"
+                    let response = if valid {
+                        serde_json::json!({
+                            "ok": true,
+                            "protocol": "aetherdrop-webtransport-v1",
+                            "token": issued_token,
+                            "expires_in": if issued_token.is_some() { super::SESSION_TTL.as_secs() } else { 0 }
+                        })
                     } else {
-                        b"{\"ok\":false,\"error\":\"pairing_rejected\"}\n"
+                        serde_json::json!({"ok": false, "error": "pairing_rejected"})
                     };
-                    let _ = send.write_all(response).await;
+                    let mut response_bytes = serde_json::to_vec(&response).unwrap_or_else(|_| b"{\"ok\":false}".to_vec());
+                    response_bytes.push(b'\n');
+                    let _ = send.write_all(&response_bytes).await;
                     let _ = send.finish().await;
                 });
             }
         }
     }
+}
+
+fn valid_device_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
