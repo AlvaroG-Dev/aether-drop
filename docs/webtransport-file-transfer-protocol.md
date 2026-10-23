@@ -51,7 +51,7 @@ Unsupported operations return a stable error and must not be routed to the legac
 
 ### Browser client module
 
-`docs/aetherdrop-webtransport.js` exposes `connectAetherDrop({ host, hash, pin, deviceId })`. It opens WebTransport with SHA-256 certificate pinning, pairs over the existing bounded newline handshake, and returns a session-bound client whose `request()` currently permits only `session.check` and `files.list`. It rejects unsupported operations locally and never falls back to HTTP. This module is a transport building block, not yet the complete mobile UI.
+`docs/aetherdrop-webtransport.js` exposes `connectAetherDrop({ host, hash, pin, deviceId })`. It opens WebTransport with SHA-256 certificate pinning, sends the protocol version in the bounded newline-delimited pairing handshake, and returns a session-bound client that supports `session.check`, `files.list`, all `upload.*` operations, `download.start`, `download.read`, and `clipboard.get/set`. It rejects unsupported operations locally and never falls back to HTTP. The HTML client uses this module for experimental transfers; real browser/desktop validation is still pending.
 
 ## Required operations
 
