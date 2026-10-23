@@ -7,7 +7,7 @@ globalThis.isSecureContext = true;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const state = { instances: [], streamsOpened: 0, pairRequest: null };
+const state = { instances: [], streamsOpened: 0, pairRequest: null, extraResponseBytes: null };
 
 class ByteQueue {
   constructor() { this.items = []; this.waiters = []; this.closed = false; }
@@ -107,6 +107,7 @@ class FakeWebTransport {
             ...(payload === null ? {} : { payload_bytes: payload.length }),
           };
           queue.push(frame(response, payload));
+          if (state.extraResponseBytes) queue.push(state.extraResponseBytes);
           queue.end();
         },
         abort: async () => queue.end(),
@@ -145,6 +146,10 @@ globalThis.WebTransport = FakeWebTransport;
   const part = await client.request('download.read', { ticket: 'wt_test', offset: 4, length: 5 });
   assert.equal(part.result.offset, 4);
   assert.deepEqual([...part.payload], [7, 7, 7, 7, 7]);
+
+  state.extraResponseBytes = new Uint8Array([0xde, 0xad]);
+  await assert.rejects(client.request('session.check'), /trailing WebTransport response bytes/);
+  state.extraResponseBytes = null;
 
   await client.request('upload.chunk', { transfer_id: 't', chunk_index: 0, sha256: '0'.repeat(64) }, new Uint8Array([1, 2, 3]));
   const openedBeforeInvalid = state.streamsOpened;
