@@ -50,7 +50,7 @@ Estos valores son límites defensivos del prototipo, no cuotas de almacenamiento
 - La publicación mediante enlaces duros atómicos requiere que el sistema de archivos de destino soporte hard links. Si no lo soporta, la transferencia falla de forma explícita en vez de degradar a una publicación con riesgo de sobrescritura.
 - El proyecto no ha completado una auditoría de seguridad ni pruebas de transferencia entre dispositivos reales. No expongas el puerto 8080 a Internet ni uses esta versión con archivos sensibles.
 
-Para un transporte realmente seguro hace falta diseñar una identidad de servidor que el navegador móvil pueda verificar —no basta con añadir un certificado autofirmado— o pasar a un cliente móvil nativo con una estrategia de confianza de claves verificable. Solo entonces debe evaluarse si procede afirmar cifrado de extremo a extremo.
+El cliente WebTransport experimental añade una comprobación explícita de identidad mediante la huella SHA-256 del certificado que la aplicación de escritorio muestra en el QR, antes de enviar el PIN. Eso permite al navegador comprobar que se conecta al certificado esperado, pero no sustituye pruebas de interoperabilidad ni una revisión de seguridad. No debe afirmarse que el producto completo está verificado como seguro hasta probar el canal en navegadores y dispositivos reales.
 
 ## Cliente WebTransport experimental
 
@@ -58,7 +58,7 @@ Esta rama incluye un cliente estático en `docs/aetherdrop-client.html` que inte
 
 **Esto aún no equivale a una versión verificada para uso real.** La CI comprueba sintaxis, tests de unidad, compilación y Clippy, pero no ejecuta un navegador móvil real ni valida el comportamiento de la red local, permisos del navegador, firewall/UDP, suspensión del móvil o transferencias grandes. El cliente es experimental; no lo uses para información confidencial ni interpretes el pinning como una auditoría de seguridad completa. La API HTTP/8080 heredada sigue existiendo y no debe considerarse cifrada.
 
-El enlace público de GitHub Pages solo incluirá estos archivos cuando se publique esta rama. No se debe fusionar a `master` únicamente porque la CI esté verde.
+El workflow de GitHub Pages despliega los archivos estáticos de esta rama cuando cambian el cliente o sus dependencias. Esto no publica cambios de la aplicación de escritorio ni fusiona la rama en `master`.
 
 ## Desarrollo
 
