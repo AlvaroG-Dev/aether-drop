@@ -370,6 +370,9 @@ async fn dispatch_request(
 ) -> Result<(serde_json::Value, Option<Vec<u8>>), &'static str> {
     use super::webtransport_protocol::validate_request;
     validate_request(request).map_err(|_| "invalid_request")?;
+    if state.server_shutdown.is_cancelled() {
+        return Err("server_shutting_down");
+    }
     let token = request.session.as_deref().ok_or("unauthorized")?;
     let now = Instant::now();
     let session = state.session_tokens.read().await.get(token).cloned().ok_or("unauthorized")?;
