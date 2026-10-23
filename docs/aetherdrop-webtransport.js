@@ -115,45 +115,66 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
       session: paired.token,
       expiresIn: paired.expires_in,
       async request(op, data, body = null) {
-        if (!["session.check", "files.list", "download.start", "download.read", "upload.start", "upload.status", "upload.chunk", "upload.finish", "upload.cancel", "clipboard.get", "clipboard.set"].includes(op)) {
-          throw new Error("This WebTransport operation is not implemented yet");
-        }
-        const requestId = crypto.randomUUID().replace(/-/g, "");
-        const requestStream = await transport.createBidirectionalStream();
-        const requestWriter = requestStream.writable.getWriter();
-        const responseReader = createByteReader(requestStream.readable.getReader());
-        if (body !== null && (!(body instanceof Uint8Array) || body.byteLength > 8 * 1024 * 1024)) {
-          throw new Error("Request body exceeds the allowed chunk size");
-        }
-        await requestWriter.write(encodeFrame({
-          version: PROTOCOL_VERSION,
-          request_id: requestId,
-          op,
-          session: paired.token,
-          ...(data === undefined ? {} : { data }),
-          ...(body === null ? {} : { payload_bytes: body.byteLength }),
-        }));
-        if (body !== null) await requestWriter.write(body);
-        await requestWriter.close();
-        const prefix = await withTimeout(responseReader.readExact(4), 30000, 'Timed out waiting for the response');
-        const length = new DataView(prefix.buffer, prefix.byteOffset, 4).getUint32(0, false);
-        if (!length || length > MAX_HEADER_BYTES) throw new Error("Invalid response header length");
-        const payload = await withTimeout(responseReader.readExact(length), 30000, 'Timed out reading the response header');
-        const response = JSON.parse(decoder.decode(payload));
-        if (response.request_id !== requestId || response.version !== PROTOCOL_VERSION) {
-          throw new Error("Response does not match the request");
-        }
-        if (!response.ok) throw new Error(response.error || "WebTransport request failed");
-        let binary = null;
-        if (response.payload_bytes !== undefined && response.payload_bytes !== null) {
-          if (!Number.isSafeInteger(response.payload_bytes) || response.payload_bytes < 0 ||
-              response.payload_bytes > 8 * 1024 * 1024) {
-            throw new Error("Response body exceeds the allowed chunk size");
+        const allowed = ["session.check", "files.list", "download.start", "download.read", "upload.start", "upload.status", "upload.chunk", "upload.finish", "upload.cancel", "clipboard.get", "clipboard.set"];
+        if (!allowed.includes(op)) throw new Error("This WebTransport operation is not implemented yet");
+        const bodyRequired = op === "upload.chunk" || op === "clipboard.set";
+        if (bodyRequired !== (body !== null)) throw new Error("This operation requires a binary body only for upload chunks or clipboard text");
+        if (body !== null) {
+          const limit = op === "clipboard.set" ? 1024 * 1024 : 8 * 1024 * 1024;
+          if (!(body instanceof Uint8Array) || body.byteLength > limit) {
+            throw new Error("Request body exceeds the allowed size for this operation");
           }
-          binary = await withTimeout(responseReader.readExact(response.payload_bytes), 60000, 'Timed out reading the response body');
         }
-        await responseReader.cancel().catch(() => {});
-        return binary === null ? response.result : { result: response.result, payload: binary };
+
+        const requestId = crypto.randomUUID().replace(/-/g, "");
+        let requestWriter = null;
+        let responseReader = null;
+        try {
+          const requestStream = await withTimeout(
+            transport.createBidirectionalStream(),
+            10000,
+            "Timed out opening a WebTransport stream",
+          );
+          requestWriter = requestStream.writable.getWriter();
+          responseReader = createByteReader(requestStream.readable.getReader());
+          await withTimeout(requestWriter.write(encodeFrame({
+            version: PROTOCOL_VERSION,
+            request_id: requestId,
+            op,
+            session: paired.token,
+            ...(data === undefined ? {} : { data }),
+            ...(body === null ? {} : { payload_bytes: body.byteLength }),
+          })), 30000, "Timed out sending the request header");
+          if (body !== null) {
+            await withTimeout(requestWriter.write(body), 30000, "Timed out sending the request body");
+          }
+          await withTimeout(requestWriter.close(), 10000, "Timed out closing the request stream");
+
+          const prefix = await withTimeout(responseReader.readExact(4), 30000, "Timed out waiting for the response");
+          const length = new DataView(prefix.buffer, prefix.byteOffset, 4).getUint32(0, false);
+          if (!length || length > MAX_HEADER_BYTES) throw new Error("Invalid response header length");
+          const payload = await withTimeout(responseReader.readExact(length), 30000, "Timed out reading the response header");
+          const response = JSON.parse(decoder.decode(payload));
+          if (response.request_id !== requestId || response.version !== PROTOCOL_VERSION) {
+            throw new Error("Response does not match the request");
+          }
+          if (!response.ok) throw new Error(response.error || "WebTransport request failed");
+          let binary = null;
+          if (response.payload_bytes !== undefined && response.payload_bytes !== null) {
+            if (!Number.isSafeInteger(response.payload_bytes) || response.payload_bytes < 0 ||
+                response.payload_bytes > 8 * 1024 * 1024) {
+              throw new Error("Response body exceeds the allowed chunk size");
+            }
+            binary = await withTimeout(responseReader.readExact(response.payload_bytes), 60000, "Timed out reading the response body");
+          }
+          return binary === null ? response.result : { result: response.result, payload: binary };
+        } catch (error) {
+          if (responseReader) await responseReader.cancel().catch(() => {});
+          if (requestWriter) await requestWriter.abort(error).catch(() => {});
+          throw error;
+        } finally {
+          if (responseReader) await responseReader.cancel().catch(() => {});
+        }
       },
       close() { transport.close({ closeCode: 0, reason: "Client closed" }); },
     };
