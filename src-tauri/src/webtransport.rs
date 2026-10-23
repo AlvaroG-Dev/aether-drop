@@ -291,20 +291,23 @@ pub async fn run(
                                 result: None,
                             }, None),
                         };
-                        let frame = match super::webtransport_protocol::encode_header(&response) {
-                            Ok(frame) => Some(frame),
-                            Err(_) => super::webtransport_protocol::encode_header(&ResponseHeader {
-                                version: super::webtransport_protocol::PROTOCOL_VERSION,
-                                request_id: request_header.request_id.clone(),
-                                ok: false,
-                                error: Some("response_too_large".to_owned()),
-                                payload_bytes: None,
-                                result: None,
-                            }).ok(),
+                        let (frame, body_to_send) = match super::webtransport_protocol::encode_header(&response) {
+                            Ok(frame) => (Some(frame), response_body),
+                            Err(_) => (
+                                super::webtransport_protocol::encode_header(&ResponseHeader {
+                                    version: super::webtransport_protocol::PROTOCOL_VERSION,
+                                    request_id: request_header.request_id.clone(),
+                                    ok: false,
+                                    error: Some("response_too_large".to_owned()),
+                                    payload_bytes: None,
+                                    result: None,
+                                }).ok(),
+                                None,
+                            ),
                         };
                         if let Some(frame) = frame {
                             let _ = response_stream.write_all(&frame).await;
-                            if let Some(body) = response_body {
+                            if let Some(body) = body_to_send {
                                 let _ = response_stream.write_all(&body).await;
                             }
                         }
