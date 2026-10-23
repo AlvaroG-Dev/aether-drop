@@ -93,7 +93,11 @@ class FakeWebTransport {
           if (request.op === 'download.read') {
             const length = request.data.length;
             payload = new Uint8Array(length).fill(7);
-            result = { offset: request.data.offset, bytes: length };
+            result = {
+              offset: request.data.offset,
+              bytes: length,
+              sha256: require('node:crypto').createHash('sha256').update(payload).digest('hex'),
+            };
           }
           const response = {
             version: 1,
