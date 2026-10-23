@@ -5,6 +5,9 @@ on:
     branches: [feat/security-and-transfer-visuals]
     paths:
       - "docs/webtransport-probe.html"
+      - "docs/aetherdrop-client.html"
+      - "docs/aetherdrop-webtransport.js"
+      - "docs/sha256.js"
       - ".github/workflows/webtransport-probe-pages.yml"
   workflow_dispatch:
 
