@@ -4,6 +4,9 @@
     const currentWindow = tauriWindowApi?.getCurrentWindow?.();
     const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent + " " + navigator.platform);
     if (!isMacOS) document.body.classList.add("custom-chrome");
+    // Use the compact desktop layout from first paint so the window never flashes
+    // a tall layout or exposes a vertical scrollbar while content is measured.
+    document.body.classList.add("compact-layout");
     function showAppAlert(message, success=false) { const el=document.getElementById("appAlert"); if(!el)return; el.textContent=message; el.className="app-alert show "+(success?"success":"error"); }
     async function runWindowAction(action) {
       try {
@@ -68,7 +71,7 @@
         desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
         const targetHeight = Math.max(520, Math.min(Math.ceil(desired), maxHeight));
         const inner = await currentWindow.innerSize();
-        const targetWidth = Math.max(640, Math.min(Math.ceil(inner.width / scale), Math.floor(window.screen.availWidth - 24)));
+        const targetWidth = Math.max(640, Math.min(Math.ceil(inner.width / scale), 840, Math.floor(window.screen.availWidth - 24)));
         const LogicalSize = window.__TAURI__?.dpi?.LogicalSize;
         if (!LogicalSize) throw new Error("No está disponible LogicalSize en Tauri.");
         if (Math.abs(inner.height / scale - targetHeight) > 18 || Math.abs(inner.width / scale - targetWidth) > 18) {
