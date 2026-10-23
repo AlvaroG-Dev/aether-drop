@@ -227,8 +227,9 @@
             while (offset < info.size_bytes) {
               const length = Math.min(info.chunk_size, info.size_bytes - offset);
               const part = await client.request('download.read', { ticket: info.ticket, offset, length });
-              if (!(part.payload instanceof Uint8Array) || part.payload.length !== length) {
-                throw new Error('El bloque recibido no coincide con el tamaño esperado.');
+              if (!(part.payload instanceof Uint8Array) || part.payload.length !== length ||
+                  !part.result || part.result.offset !== offset || part.result.bytes !== length) {
+                throw new Error('El bloque recibido no coincide con el rango esperado.');
               }
               if (writable) await writable.write(part.payload);
               else chunks.push(part.payload);
