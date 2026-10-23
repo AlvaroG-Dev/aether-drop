@@ -21,18 +21,27 @@ function encodeFrame(value) {
   return frame;
 }
 
-async function readExact(reader, length) {
-  const result = new Uint8Array(length);
-  let offset = 0;
-  while (offset < length) {
-    const { value, done } = await reader.read();
-    if (done || !value || value.length === 0) throw new Error("Truncated WebTransport response");
-    const take = Math.min(value.length, length - offset);
-    result.set(value.subarray(0, take), offset);
-    offset += take;
-    if (take < value.length) throw new Error("Unexpected trailing bytes in JSON response stream");
-  }
-  return result;
+function createByteReader(reader) {
+  let pending = new Uint8Array(0);
+  return {
+    async readExact(length) {
+      const result = new Uint8Array(length);
+      let offset = 0;
+      while (offset < length) {
+        if (pending.length === 0) {
+          const { value, done } = await reader.read();
+          if (done || !value || value.length === 0) throw new Error("Truncated WebTransport response");
+          pending = value;
+        }
+        const take = Math.min(pending.length, length - offset);
+        result.set(pending.subarray(0, take), offset);
+        offset += take;
+        pending = pending.subarray(take);
+      }
+      return result;
+    },
+    async cancel() { return reader.cancel(); },
+  };
 }
 
 async function readJsonLine(reader, limit = 512) {
@@ -90,7 +99,7 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
         const requestId = crypto.randomUUID().replace(/-/g, "");
         const requestStream = await transport.createBidirectionalStream();
         const requestWriter = requestStream.writable.getWriter();
-        const responseReader = requestStream.readable.getReader();
+        const responseReader = createByteReader(requestStream.readable.getReader());
         await requestWriter.write(encodeFrame({
           version: PROTOCOL_VERSION,
           request_id: requestId,
@@ -99,10 +108,10 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
           ...(data === undefined ? {} : { data }),
         }));
         await requestWriter.close();
-        const prefix = await readExact(responseReader, 4);
+        const prefix = await responseReader.readExact(4);
         const length = new DataView(prefix.buffer, prefix.byteOffset, 4).getUint32(0, false);
         if (!length || length > MAX_HEADER_BYTES) throw new Error("Invalid response header length");
-        const payload = await readExact(responseReader, length);
+        const payload = await responseReader.readExact(length);
         const response = JSON.parse(decoder.decode(payload));
         if (response.request_id !== requestId || response.version !== PROTOCOL_VERSION) {
           throw new Error("Response does not match the request");
