@@ -66,9 +66,16 @@
         const screenHeight = monitor ? monitor.size.height / scale : window.screen.availHeight;
         const maxHeight = Math.max(520, Math.floor(Math.min(screenHeight, window.screen.availHeight) - 36));
         let desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
-        document.body.classList.toggle("compact-layout", desired > maxHeight);
+        document.body.classList.toggle("ultra-compact", desired > maxHeight);
         await new Promise(resolve => requestAnimationFrame(resolve));
         desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
+        // If the first compact pass still exceeds the monitor, apply the denser
+        // layout before clamping the native window size.
+        if (desired > maxHeight && !document.body.classList.contains("ultra-compact")) {
+          document.body.classList.add("ultra-compact");
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          desired = app.scrollHeight + (document.body.classList.contains("custom-chrome") ? 40 : 0) + 4;
+        }
         const targetHeight = Math.max(520, Math.min(Math.ceil(desired), maxHeight));
         const inner = await currentWindow.innerSize();
         const targetWidth = Math.max(640, Math.min(Math.ceil(inner.width / scale), 840, Math.floor(window.screen.availWidth - 24)));
