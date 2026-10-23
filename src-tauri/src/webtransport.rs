@@ -346,12 +346,28 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::{constant_time_eq, pair_request_is_probe_only, valid_device_id};
 
     #[test]
     fn pairing_secret_comparison_checks_length_and_content() {
         assert!(constant_time_eq(b"123456", b"123456"));
         assert!(!constant_time_eq(b"123456", b"123457"));
         assert!(!constant_time_eq(b"123456", b"12345"));
+    }
+
+    #[test]
+    fn device_identifiers_are_bounded_and_ascii_safe() {
+        assert!(valid_device_id("dev_0123456789abcdef"));
+        assert!(!valid_device_id(""));
+        assert!(!valid_device_id("device with spaces"));
+        assert!(!valid_device_id(&"x".repeat(65)));
+        assert!(!valid_device_id("dev_á"));
+    }
+
+    #[test]
+    fn legacy_probe_pairing_does_not_claim_to_issue_a_session() {
+        assert!(pair_request_is_probe_only(br#"{"type":"pair","pin":"123456"}"#));
+        assert!(!pair_request_is_probe_only(br#"{"type":"pair","pin":"123456","device_id":"dev_123"}"#));
+        assert!(!pair_request_is_probe_only(br#"{"type":"nope","pin":"123456"}"#));
     }
 }
