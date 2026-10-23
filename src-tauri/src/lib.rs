@@ -273,7 +273,7 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
     let (webtransport_probe_url, webtransport_probe_qr_base64) =
         if let Some(info) = webtransport_info.as_ref() {
             let probe_url = format!(
-                "https://alvarog-dev.github.io/aether-drop/webtransport-probe.html?host={}&hash={}",
+                "https://alvarog-dev.github.io/aether-drop/aetherdrop-client.html?host={}&hash={}",
                 info.host, info.certificate_hash
             );
             let code = QrCode::new(probe_url.as_bytes()).map_err(|error| error.to_string())?;
