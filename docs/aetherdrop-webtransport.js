@@ -92,21 +92,26 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
       transport,
       session: paired.token,
       expiresIn: paired.expires_in,
-      async request(op, data) {
-        if (!["session.check", "files.list", "download.start", "download.read"].includes(op)) {
+      async request(op, data, body = null) {
+        if (!["session.check", "files.list", "download.start", "download.read", "upload.start", "upload.status", "upload.chunk", "upload.finish", "upload.cancel"].includes(op)) {
           throw new Error("This WebTransport operation is not implemented yet");
         }
         const requestId = crypto.randomUUID().replace(/-/g, "");
         const requestStream = await transport.createBidirectionalStream();
         const requestWriter = requestStream.writable.getWriter();
         const responseReader = createByteReader(requestStream.readable.getReader());
+        if (body !== null && (!(body instanceof Uint8Array) || body.byteLength > 8 * 1024 * 1024)) {
+          throw new Error("Request body exceeds the allowed chunk size");
+        }
         await requestWriter.write(encodeFrame({
           version: PROTOCOL_VERSION,
           request_id: requestId,
           op,
           session: paired.token,
           ...(data === undefined ? {} : { data }),
+          ...(body === null ? {} : { payload_bytes: body.byteLength }),
         }));
+        if (body !== null) await requestWriter.write(body);
         await requestWriter.close();
         const prefix = await responseReader.readExact(4);
         const length = new DataView(prefix.buffer, prefix.byteOffset, 4).getUint32(0, false);
