@@ -58,7 +58,13 @@ pub async fn run(
         }
     };
     let host = ip.to_string();
-    let identity = match Identity::self_signed(&[host.as_str(), "localhost", "127.0.0.1"]) {
+    let certificate_now = wtransport::tls::self_signed::time::OffsetDateTime::now_utc();
+    let identity = match Identity::self_signed_builder()
+        .subject_alt_names([host.as_str(), "localhost", "127.0.0.1"])
+        .not_before(certificate_now - wtransport::tls::self_signed::time::Duration::minutes(5))
+        .offset_from_not_before(wtransport::tls::self_signed::time::Duration::days(13))
+        .build()
+    {
         Ok(identity) => identity,
         Err(error) => {
             let _ = ready.send(Err(format!("No se pudo crear el certificado WebTransport: {error}")));
