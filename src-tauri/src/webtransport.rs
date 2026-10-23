@@ -291,7 +291,18 @@ pub async fn run(
                                 result: None,
                             }, None),
                         };
-                        if let Ok(frame) = super::webtransport_protocol::encode_header(&response) {
+                        let frame = match super::webtransport_protocol::encode_header(&response) {
+                            Ok(frame) => Some(frame),
+                            Err(_) => super::webtransport_protocol::encode_header(&ResponseHeader {
+                                version: super::webtransport_protocol::PROTOCOL_VERSION,
+                                request_id: request_header.request_id.clone(),
+                                ok: false,
+                                error: Some("response_too_large".to_owned()),
+                                payload_bytes: None,
+                                result: None,
+                            }).ok(),
+                        };
+                        if let Some(frame) = frame {
                             let _ = response_stream.write_all(&frame).await;
                             if let Some(body) = response_body {
                                 let _ = response_stream.write_all(&body).await;
@@ -502,7 +513,7 @@ async fn dispatch_request(
             let items: Vec<serde_json::Value> = files.iter().map(|(id, path)| {
                 serde_json::json!({
                     "id": id,
-                    "name": path.file_name().unwrap_or_default().to_string_lossy().to_string()
+                    "name": path.file_name().unwrap_or_default().to_string_lossy().chars().take(120).collect::<String>()
                 })
             }).collect();
             Ok((serde_json::Value::Array(items), None))
