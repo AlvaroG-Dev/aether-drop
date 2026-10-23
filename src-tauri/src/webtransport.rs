@@ -233,7 +233,23 @@ pub async fn run(
                                 continue;
                             }
                         };
-                        let result = dispatch_request(&state, &request_header).await;
+                        let request_body = if let Some(length) = request_header.payload_bytes {
+                            let cap = if request_header.op == "clipboard.set" { super::MAX_CLIPBOARD_BYTES as u64 } else { UPLOAD_CHUNK_BYTES as u64 };
+                            if length > cap {
+                                let _ = response_stream.finish().await;
+                                continue;
+                            }
+                            match timeout(Duration::from_secs(30), read_stream_payload(&mut request_stream, length, cap)).await {
+                                Ok(Ok(body)) => Some(body),
+                                _ => {
+                                    let _ = response_stream.finish().await;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let result = dispatch_request(&state, &request_header, request_body).await;
                         let (response, response_body) = match result {
                             Ok((value, body)) => (ResponseHeader {
                                 version: super::webtransport_protocol::PROTOCOL_VERSION,
@@ -299,6 +315,24 @@ async fn read_request_header(
     Ok(header)
 }
 
+async fn read_stream_payload(
+    stream: &mut wtransport::RecvStream,
+    length: u64,
+    max_length: u64,
+) -> Result<Vec<u8>, super::webtransport_protocol::FrameError> {
+    use super::webtransport_protocol::FrameError;
+    if length > max_length || length > usize::MAX as u64 {
+        return Err(FrameError::InvalidLength);
+    }
+    let mut body = vec![0u8; length as usize];
+    read_stream_exact(stream, &mut body).await?;
+    let mut extra = [0u8; 1];
+    match stream.read(&mut extra).await {
+        Ok(None) | Ok(Some(0)) => Ok(body),
+        Ok(Some(_)) | Err(_) => Err(FrameError::InvalidLength),
+    }
+}
+
 async fn read_stream_exact(
     stream: &mut wtransport::RecvStream,
     output: &mut [u8],
@@ -317,6 +351,7 @@ async fn read_stream_exact(
 async fn dispatch_request(
     state: &AppState,
     request: &super::webtransport_protocol::RequestHeader,
+    body: Option<Vec<u8>>,
 ) -> Result<(serde_json::Value, Option<Vec<u8>>), &'static str> {
     use super::webtransport_protocol::validate_request;
     validate_request(request).map_err(|_| "invalid_request")?;
