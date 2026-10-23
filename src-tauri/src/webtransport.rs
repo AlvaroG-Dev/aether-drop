@@ -578,7 +578,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, pair_request_is_probe_only, valid_device_id};
+    use super::*;
 
     #[test]
     fn pairing_secret_comparison_checks_length_and_content() {
@@ -601,5 +601,69 @@ mod tests {
         assert!(pair_request_is_probe_only(br#"{"type":"pair","pin":"123456"}"#));
         assert!(!pair_request_is_probe_only(br#"{"type":"pair","pin":"123456","device_id":"dev_123"}"#));
         assert!(!pair_request_is_probe_only(br#"{"type":"nope","pin":"123456"}"#));
+    }
+
+    #[tokio::test]
+    async fn webtransport_download_reads_only_the_requested_bounded_range() {
+        let dir = std::env::temp_dir().join(format!("aetherdrop-wt-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let path = dir.join("hello.txt");
+        tokio::fs::write(&path, b"hello world").await.unwrap();
+
+        let device_id = "dev_test123".to_owned();
+        let token = "test_token_123".to_owned();
+        let state = AppState {
+            save_dir: Arc::new(tokio::sync::RwLock::new(dir.clone())),
+            pc_files: Arc::new(tokio::sync::RwLock::new(vec![("file1".to_owned(), path.clone())])),
+            pin: "123456".to_owned(),
+            trusted_devices: Arc::new(tokio::sync::RwLock::new(vec![device_id.clone()])),
+            clipboard_text: Arc::new(tokio::sync::RwLock::new(String::new())),
+            session_tokens: Arc::new(tokio::sync::RwLock::new(HashMap::from([(
+                token.clone(),
+                SessionRecord {
+                    device_id: device_id.clone(),
+                    expires_at: Instant::now() + Duration::from_secs(60),
+                    cancellation: CancellationToken::new(),
+                },
+            )]))),
+            auth_failures: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            upload_slots: Arc::new(Semaphore::new(super::super::MAX_CONCURRENT_UPLOADS)),
+            download_slots: Arc::new(Semaphore::new(super::super::MAX_CONCURRENT_DOWNLOADS)),
+            pending_upload_slots: Arc::new(Semaphore::new(super::super::MAX_PENDING_UPLOADS)),
+            pending_uploads: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            completed_uploads: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            reserved_upload_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            download_tickets: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            server_status: Arc::new(tokio::sync::RwLock::new(super::super::ServerStatus::Ready)),
+            server_shutdown: CancellationToken::new(),
+            mdns_daemon: Arc::new(std::sync::Mutex::new(None)),
+            webtransport_info: Arc::new(tokio::sync::RwLock::new(None)),
+            webtransport_error: Arc::new(tokio::sync::RwLock::new(None)),
+        };
+
+        let start = super::super::webtransport_protocol::RequestHeader {
+            version: super::super::webtransport_protocol::PROTOCOL_VERSION,
+            request_id: "download_start".to_owned(),
+            op: "download.start".to_owned(),
+            session: Some(token.clone()),
+            payload_bytes: None,
+            data: Some(serde_json::json!({"file_id": "file1"})),
+        };
+        let (metadata, _) = dispatch_request(&state, &start, None).await.unwrap();
+        let ticket = metadata["ticket"].as_str().unwrap().to_owned();
+        assert_eq!(metadata["size_bytes"].as_u64(), Some(11));
+
+        let read = super::super::webtransport_protocol::RequestHeader {
+            version: super::super::webtransport_protocol::PROTOCOL_VERSION,
+            request_id: "download_read".to_owned(),
+            op: "download.read".to_owned(),
+            session: Some(token),
+            payload_bytes: None,
+            data: Some(serde_json::json!({"ticket": ticket, "offset": 6, "length": 5})),
+        };
+        let (_, body) = dispatch_request(&state, &read, None).await.unwrap();
+        assert_eq!(body.unwrap(), b"world");
+        tokio::fs::remove_file(path).await.unwrap();
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 }
