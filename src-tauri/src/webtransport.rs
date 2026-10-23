@@ -183,7 +183,7 @@ pub async fn run(
                                     }
                                 });
                                 sessions.insert(token.clone(), SessionRecord {
-                                    device_id,
+                                    device_id: device_id.clone(),
                                     expires_at: now + super::SESSION_TTL,
                                     cancellation: CancellationToken::new(),
                                 });
