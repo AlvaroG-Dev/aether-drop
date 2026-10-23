@@ -335,13 +335,20 @@ pub async fn run(
                                 None,
                             ),
                         };
-                        if let Some(frame) = frame {
-                            let _ = response_stream.write_all(&frame).await;
-                            if let Some(body) = body_to_send {
-                                let _ = response_stream.write_all(&body).await;
+                        let write_result = timeout(Duration::from_secs(30), async {
+                            if let Some(frame) = frame {
+                                response_stream.write_all(&frame).await?;
+                                if let Some(body) = body_to_send {
+                                    response_stream.write_all(&body).await?;
+                                }
                             }
+                            response_stream.finish().await
+                        }).await;
+                        if !matches!(write_result, Ok(Ok(()))) {
+                            // A peer that stops reading must not pin this connection
+                            // task or its transfer semaphore permits indefinitely.
+                            return;
                         }
-                        let _ = response_stream.finish().await;
                     }
                 });
             }
