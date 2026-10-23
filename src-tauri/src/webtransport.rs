@@ -1,6 +1,6 @@
-//! Experimental, browser-authenticated WebTransport pairing endpoint.
-//! This module proves the browser TLS/pinning handshake only; file transfer is not
-//! routed through this endpoint until end-to-end tests have passed.
+//! Experimental WebTransport endpoint with certificate pinning, device pairing,
+//! authenticated metadata operations, and bounded protocol framing. File transfer
+//! operations remain unavailable until their handlers and end-to-end tests are complete.
 
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
 use super::{AppState, SessionRecord};
