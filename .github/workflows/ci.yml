@@ -29,6 +29,8 @@ jobs:
         run: node scripts/check-webtransport-probe.cjs
       - name: Check WebTransport browser client syntax
         run: node --input-type=module --check < docs/aetherdrop-webtransport.js
+      - name: Test WebTransport browser client protocol
+        run: node scripts/test-webtransport-client.cjs
       - name: Check WebTransport browser UI syntax
         run: node scripts/check-webtransport-client.cjs
       - name: Test SHA-256 browser implementation
