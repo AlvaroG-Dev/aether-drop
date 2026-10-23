@@ -23,6 +23,8 @@ jobs:
         run: node --check src-tauri/src/mobile.js
       - name: Check WebTransport probe JavaScript syntax
         run: node scripts/check-webtransport-probe.cjs
+      - name: Check WebTransport browser client syntax
+        run: node --input-type=module --check < docs/aetherdrop-webtransport.js
       - name: Test SHA-256 browser implementation
         run: node scripts/test-sha256.cjs
       - name: Install Tauri Linux dependencies
