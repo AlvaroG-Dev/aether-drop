@@ -374,6 +374,7 @@ async fn dispatch_request(
             }), None))
         }
         "download.read" => {
+            let _download_permit = state.download_slots.clone().try_acquire_owned().map_err(|_| "too_many_downloads")?;
             let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
             if data.len() != 3 { return Err("invalid_request"); }
             let ticket_token = data.get("ticket").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
