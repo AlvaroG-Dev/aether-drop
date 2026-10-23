@@ -23,6 +23,9 @@ pub struct RequestHeader {
     pub session: Option<String>,
     #[serde(default)]
     pub payload_bytes: Option<u64>,
+    /// Operation arguments; metadata only, never whole file contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +219,7 @@ mod tests {
             op: "files.list".to_owned(),
             session: Some("opaque-token".to_owned()),
             payload_bytes: None,
+            data: None,
         }
     }
 
