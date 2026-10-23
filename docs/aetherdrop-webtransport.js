@@ -75,6 +75,14 @@ function createByteReader(reader) {
   };
 }
 
+async function ensurePairingEof(reader) {
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    if (value && value.length) throw new Error("Unexpected trailing pairing response bytes");
+  }
+}
+
 async function readJsonLine(reader, limit = 512) {
   let bytes = new Uint8Array(0);
   while (bytes.length < limit) {
@@ -88,7 +96,10 @@ async function readJsonLine(reader, limit = 512) {
     combined.set(bytes);
     combined.set(part, bytes.length);
     bytes = combined;
-    if (newline >= 0) return JSON.parse(decoder.decode(bytes));
+    if (newline >= 0) {
+      if (newline !== value.length - 1) throw new Error("Unexpected trailing pairing response bytes");
+      return JSON.parse(decoder.decode(bytes));
+    }
   }
   throw new Error("Incomplete pairing response");
 }
@@ -117,6 +128,11 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
         typeof paired.token !== "string" || !/^[A-Za-z0-9]+$/.test(paired.token)) {
       throw new Error("Pairing was rejected or no session was issued");
     }
+    await withTimeout(
+      ensurePairingEof(reader),
+      10000,
+      "Timed out waiting for the pairing stream to close",
+    );
     await reader.cancel().catch(() => {});
     return {
       transport,
