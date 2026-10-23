@@ -380,16 +380,24 @@ async fn dispatch_request(
             let ticket_token = data.get("ticket").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
             let offset = data.get("offset").and_then(serde_json::Value::as_u64).ok_or("invalid_request")?;
             let length = data.get("length").and_then(serde_json::Value::as_u64).ok_or("invalid_request")?;
-            if ticket_token.len() > 128 || length == 0 || length > UPLOAD_CHUNK_BYTES as u64 {
+            if !ticket_token.starts_with("wt") || ticket_token.len() > 128 || length == 0 || length > UPLOAD_CHUNK_BYTES as u64 {
                 return Err("invalid_request");
             }
-            let ticket = state.download_tickets.read().await.get(ticket_token).cloned().ok_or("download_expired")?;
-            if ticket.expires_at <= Instant::now()
-                || ticket.session_token != token
-                || ticket.device_id != session.device_id
-            {
-                return Err("download_expired");
-            }
+            let ticket = {
+                let now = Instant::now();
+                let mut tickets = state.download_tickets.write().await;
+                let entry = tickets.get_mut(ticket_token).ok_or("download_expired")?;
+                if entry.expires_at <= now
+                    || entry.session_token != token
+                    || entry.device_id != session.device_id
+                {
+                    return Err("download_expired");
+                }
+                // Sliding expiry allows large files on slow LANs while an active
+                // download is progressing; an idle or abandoned ticket still expires.
+                entry.expires_at = now + Duration::from_secs(60);
+                entry.clone()
+            };
             let path = {
                 let files = state.pc_files.read().await;
                 files.iter().find(|(id, _)| id == &ticket.file_id).map(|(_, path)| path.clone())
