@@ -3,7 +3,7 @@
 //! operations remain unavailable until their handlers and end-to-end tests are complete.
 
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
-use super::{AppState, AuthorizedSession, DownloadTicket, SessionRecord, UploadFinishRequest, UploadRequestPermit, UploadStartRequest, UPLOAD_CHUNK_BYTES};
+use super::{AppState, AuthorizedSession, ClipboardRequest, DownloadTicket, SessionRecord, UploadFinishRequest, UploadRequestPermit, UploadStartRequest, MAX_CLIPBOARD_BYTES, UPLOAD_CHUNK_BYTES};
 use axum::{extract::{Extension, Path as AxumPath, State}, http::{HeaderMap, HeaderValue, StatusCode}, Json};
 use bytes::Bytes;
 use super::webtransport_protocol::ResponseHeader;
@@ -385,6 +385,21 @@ async fn dispatch_request(
         cancellation: session.cancellation.clone(),
     };
     match request.op.as_str() {
+        "clipboard.get" => {
+            let text = state.clipboard_text.read().await.clone();
+            if text.len() > MAX_CLIPBOARD_BYTES { return Err("clipboard_too_large"); }
+            Ok((serde_json::json!({"encoding": "utf-8", "bytes": text.len()}), Some(text.into_bytes())))
+        }
+        "clipboard.set" => {
+            let bytes = body.ok_or("invalid_request")?;
+            if bytes.len() > MAX_CLIPBOARD_BYTES { return Err("payload_too_large"); }
+            let text = String::from_utf8(bytes).map_err(|_| "invalid_utf8")?;
+            let result = super::set_clipboard(State(state.clone()), Json(ClipboardRequest { text })).await;
+            match result {
+                Ok(_) => Ok((serde_json::json!({"updated": true}), None)),
+                Err((status, _)) => Err(upload_status_code(status)),
+            }
+        }
         "upload.start" => {
             let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
             if data.len() != 2 { return Err("invalid_request"); }
