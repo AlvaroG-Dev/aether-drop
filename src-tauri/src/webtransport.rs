@@ -269,13 +269,19 @@ pub async fn run(
                         } else {
                             None
                         };
+                        let mut request_body_fully_read = request_header.payload_bytes.is_none();
                         let request_body = if let Some(length) = request_header.payload_bytes {
                             let cap = if request_header.op == "clipboard.set" { super::MAX_CLIPBOARD_BYTES as u64 } else { UPLOAD_CHUNK_BYTES as u64 };
                             if length > cap || (request_header.op == "upload.chunk" && upload_request_permit.is_none()) {
+                                // Do not allocate or drain an oversized/unadmitted body.
+                                // Dispatch below returns a bounded protocol error.
                                 None
                             } else {
                                 match timeout(Duration::from_secs(30), read_stream_payload(&mut request_stream, length, cap)).await {
-                                    Ok(Ok(body)) => Some(body),
+                                    Ok(Ok(body)) => {
+                                        request_body_fully_read = true;
+                                        Some(body)
+                                    }
                                     _ => {
                                         let _ = response_stream.finish().await;
                                         continue;
@@ -287,7 +293,9 @@ pub async fn run(
                         };
                         // One operation per stream: require the peer to finish the
                         // request stream and reject bytes beyond the declared payload.
-                        if !matches!(
+                        // If we deliberately skipped a body for a rejected request,
+                        // leave it unread and return the dispatcher's bounded error.
+                        if request_body_fully_read && !matches!(
                             timeout(Duration::from_secs(5), ensure_stream_eof(&mut request_stream)).await,
                             Ok(Ok(()))
                         ) {
