@@ -145,20 +145,66 @@
         const bytes = new Uint8Array(buffer);
         wholeHash.update(bytes);
         const chunkHash = window.sha256.create().update(bytes).hex();
-        await client.request('upload.chunk', {
-          transfer_id: transferId,
-          chunk_index: chunkIndex,
-          sha256: chunkHash,
-        }, bytes);
+        try {
+          await client.request('upload.chunk', {
+            transfer_id: transferId,
+            chunk_index: chunkIndex,
+            sha256: chunkHash,
+          }, bytes);
+        } catch (chunkError) {
+          // A lost response does not tell us whether the server committed this chunk.
+          // Query authoritative progress before retrying to avoid duplicate/out-of-order writes.
+          let progress;
+          try {
+            progress = await client.request('upload.status', { transfer_id: transferId });
+          } catch {
+            throw chunkError;
+          }
+          if (!progress || !Number.isSafeInteger(progress.next_chunk) ||
+              !Number.isSafeInteger(progress.received_bytes)) {
+            throw new Error('No se pudo verificar el estado de la subida tras perder la respuesta.');
+          }
+          if (progress.next_chunk === chunkIndex + 1 &&
+              progress.received_bytes === offset + bytes.length) {
+            // The server accepted the chunk and only its response was lost.
+          } else if (progress.next_chunk === chunkIndex && progress.received_bytes === offset) {
+            // The server did not commit the chunk; retry this exact chunk once.
+            await client.request('upload.chunk', {
+              transfer_id: transferId,
+              chunk_index: chunkIndex,
+              sha256: chunkHash,
+            }, bytes);
+          } else {
+            throw new Error('El estado de la subida no coincide con el bloque enviado; se cancela para evitar corrupción.');
+          }
+        }
         offset += bytes.length;
         chunkIndex += 1;
         transferStatus.textContent = 'Enviando… ' + Math.floor(offset * 100 / file.size) + '%';
       }
       transferStatus.textContent = 'Verificando el archivo completo…';
-      const finished = await client.request('upload.finish', {
-        transfer_id: transferId,
-        sha256: wholeHash.hex(),
-      });
+      const expectedWholeHash = wholeHash.hex();
+      let finished;
+      try {
+        finished = await client.request('upload.finish', {
+          transfer_id: transferId,
+          sha256: expectedWholeHash,
+        });
+      } catch (finishError) {
+        // finish may have published the file even if its response was lost.
+        let progress;
+        try {
+          progress = await client.request('upload.status', { transfer_id: transferId });
+        } catch {
+          throw finishError;
+        }
+        const receipt = progress && progress.completed_receipt;
+        if (!receipt || receipt.filename !== file.name || receipt.size_bytes !== file.size ||
+            receipt.sha256 !== expectedWholeHash) {
+          throw finishError;
+        }
+        finished = receipt;
+      }
       transferId = null;
       transferStatus.textContent = 'Archivo recibido y verificado: ' + file.name;
       uploadInput.value = '';
