@@ -265,7 +265,7 @@ pub async fn run(
 
 fn pair_request_is_probe_only(bytes: &[u8]) -> bool {
     serde_json::from_slice::<PairRequest>(bytes)
-        .map(|request| request.device_id.is_none())
+        .map(|request| request.kind == "pair" && request.device_id.is_none())
         .unwrap_or(false)
 }
 
