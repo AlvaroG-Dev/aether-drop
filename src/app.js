@@ -85,7 +85,7 @@
           webtransportQr.hidden = false;
           webtransportLink.href = info.webtransport_probe_url;
           webtransportLink.style.display = 'inline-block';
-          webtransportStatus.textContent = 'Escanea este segundo QR desde el móvil. La página de prueba necesita Internet para cargarse; la conexión de prueba va directa al PC y no envía archivos.';
+          webtransportStatus.textContent = 'Escanea este QR desde el móvil. La página necesita Internet para cargarse; el canal WebTransport va directo al PC. Esta versión solo permite vincular el dispositivo y listar archivos: todavía no transfiere archivos.';
         } else {
           webtransportStatus.textContent = info.webtransport_error
             ? 'Prueba no disponible: ' + info.webtransport_error
