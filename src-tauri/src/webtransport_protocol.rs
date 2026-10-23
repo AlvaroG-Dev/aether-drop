@@ -134,11 +134,15 @@ pub fn validate_request(header: &RequestHeader) -> Result<(), FrameError> {
     }) {
         return Err(FrameError::InvalidRequestId);
     }
-    if header.payload_bytes.is_some_and(|length| length > 2 * 1024 * 1024 * 1024) {
-        return Err(FrameError::InvalidLength);
-    }
+    // Transfers are chunked: a single WebTransport frame must never carry a
+    // whole multi-gigabyte file. Keep this in sync with the desktop upload chunk
+    // limit (8 MiB); larger files use multiple independently validated requests.
+    const MAX_BINARY_FRAME_BYTES: u64 = 8 * 1024 * 1024;
     let binary_operation = matches!(header.op.as_str(), "upload.chunk" | "download.read");
     if binary_operation != header.payload_bytes.is_some() {
+        return Err(FrameError::InvalidLength);
+    }
+    if header.payload_bytes.is_some_and(|length| length > MAX_BINARY_FRAME_BYTES) {
         return Err(FrameError::InvalidLength);
     }
     Ok(())
@@ -231,9 +235,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_payload_length_over_file_limit() {
+    fn rejects_payload_length_over_single_frame_limit() {
         let mut request = valid_request();
-        request.payload_bytes = Some(2 * 1024 * 1024 * 1024 + 1);
+        request.op = "upload.chunk".to_owned();
+        request.payload_bytes = Some(8 * 1024 * 1024 + 1);
         assert!(matches!(validate_request(&request), Err(FrameError::InvalidLength)));
+        request.payload_bytes = Some(8 * 1024 * 1024);
+        assert!(validate_request(&request).is_ok());
     }
 }
