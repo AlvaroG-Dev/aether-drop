@@ -1,5 +1,9 @@
 name: Rust and Tauri checks
 
+concurrency:
+  group: aether-drop-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [master, "feat/**", "fix/**"]
