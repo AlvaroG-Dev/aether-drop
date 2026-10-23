@@ -446,8 +446,8 @@ async fn dispatch_request(
             let transfer_id = data.get("transfer_id").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
             let chunk_index = data.get("chunk_index").and_then(serde_json::Value::as_u64).ok_or("invalid_request")?;
             let sha256 = data.get("sha256").and_then(serde_json::Value::as_str).filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).ok_or("invalid_request")?;
-            let body = body.ok_or("invalid_request")?;
             let permit = upload_request_permit.ok_or("too_many_requests")?;
+            let body = body.ok_or("invalid_request")?;
             let mut headers = HeaderMap::new();
             headers.insert("x-chunk-sha256", sha256.parse::<HeaderValue>().map_err(|_| "invalid_request")?);
             let result = super::upload_chunk(State(state.clone()), Extension(authorized.clone()),
