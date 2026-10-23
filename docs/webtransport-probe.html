@@ -11,7 +11,7 @@
 main{width:min(100%,520px);border:1px solid #252b37;border-radius:22px;padding:26px;background:#121620;box-shadow:0 24px 80px #0005}
 h1{font-size:1.5rem;margin:0 0 8px}p{color:#aeb8c8;line-height:1.55}.tag{font-size:.75rem;text-transform:uppercase;letter-spacing:.12em;color:#94a8c9}
 label{display:block;margin:22px 0 8px;font-size:.9rem;color:#c9d2df}input{width:100%;border:1px solid #374154;background:#090c12;color:#fff;border-radius:12px;padding:14px;font:inherit;letter-spacing:.16em}
-button{width:100%;border:0;border-radius:12px;padding:14px;margin-top:14px;background:#dce8ff;color:#101522;font:600 1rem system-ui;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+button{width:100%;border:0;border-radius:12px;padding:14px;margin-top:14px;background:#dce8ff;color:#101522;font:600 1rem system-ui;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}
 #status{margin-top:18px;border:1px solid #30394a;background:#0c1018;border-radius:12px;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere}
 .small{font-size:.8rem;color:#8d9aae}.ok{color:#86efac}.bad{color:#fda4af}
 </style>
@@ -23,13 +23,14 @@ button{width:100%;border:0;border-radius:12px;padding:14px;margin-top:14px;backg
   <p>Esta página comprueba que el navegador puede autenticar el certificado efímero del PC por su huella SHA-256 y abrir un canal WebTransport cifrado por la Wi-Fi. No transmite archivos y no utiliza un servidor de retransmisión.</p>
   <label for="pin">PIN mostrado en AetherDrop</label>
   <input id="pin" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000">
-  <button id="connect">Verificar conexión segura</button>
+  <button id="connect" type="button">Verificar conexión segura</button>
   <div id="status" role="status" aria-live="polite">Preparando comprobaciones…</div>
   <p class="small">No hay fallback a HTTP. Si WebTransport, el acceso a la red local o la huella del certificado no son compatibles, la prueba falla. Esta página se publica por separado en GitHub Pages; la dirección local del PC solo se usa para el canal WebTransport.</p>
 </main>
 <script type="module">
 const status = document.getElementById('status');
 const button = document.getElementById('connect');
+const pinInput = document.getElementById('pin');
 const params = new URLSearchParams(location.search);
 const host = params.get('host') || '';
 const hash = params.get('hash') || '';
@@ -46,17 +47,34 @@ function setStatus(message, kind = '') {
 function hexToBytes(value) {
   return Uint8Array.from(value.match(/.{2}/g), byte => Number.parseInt(byte, 16));
 }
-setStatus(
-  'Contexto seguro: ' + (secure ? 'sí' : 'no') +
-  '\nWebTransport: ' + (supported ? 'disponible' : 'no disponible') +
-  '\nHost LAN: ' + (validHost ? host : 'inválido o ausente') +
-  '\nHuella SHA-256: ' + (validHash ? 'válida' : 'inválida o ausente')
-);
-button.disabled = !secure || !supported || !validHost || !validHash;
+function showChecks() {
+  setStatus(
+    'Contexto seguro: ' + (secure ? 'sí' : 'no') +
+    '\nWebTransport: ' + (supported ? 'disponible' : 'no disponible') +
+    '\nHost LAN: ' + (validHost ? host : 'inválido o ausente') +
+    '\nHuella SHA-256: ' + (validHash ? 'válida' : 'inválida o ausente') +
+    ((!validHost || !validHash) ? '\n\nFaltan los datos de conexión del PC. Abre esta página con los parámetros host y hash que genere AetherDrop.' : '')
+  );
+}
+showChecks();
+
 button.addEventListener('click', async () => {
-  const pin = document.getElementById('pin').value.trim();
+  if (!secure) {
+    setStatus('El navegador no considera esta página un contexto seguro. Abre la página HTTPS publicada en GitHub Pages.', 'bad');
+    return;
+  }
+  if (!supported) {
+    setStatus('Este navegador no admite WebTransport. Prueba con una versión compatible de Chromium.', 'bad');
+    return;
+  }
+  if (!validHost || !validHash) {
+    setStatus('No se puede iniciar la conexión: falta la IP local del PC o la huella SHA-256 real del certificado. AetherDrop debe generar y proporcionar ambos datos. No se ha intentado ninguna conexión.', 'bad');
+    return;
+  }
+  const pin = pinInput.value.trim();
   if (!/^[0-9]{6}$/.test(pin)) {
     setStatus('Introduce el PIN de seis cifras que aparece en el PC.', 'bad');
+    pinInput.focus();
     return;
   }
   button.disabled = true;
@@ -69,10 +87,15 @@ button.addEventListener('click', async () => {
       requireUnreliable: true,
       serverCertificateHashes: [{ algorithm: 'sha-256', value: hexToBytes(hash) }]
     });
-    await Promise.race([
-      transport.ready,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Tiempo agotado al conectar. Comprueba la Wi-Fi, el puerto UDP 8443 y los permisos de red local.')), 10000))
-    ]);
+    let timeoutId;
+    try {
+      await Promise.race([
+        transport.ready,
+        new Promise((_, reject) => { timeoutId = setTimeout(() => reject(new Error('Tiempo agotado al conectar. Comprueba la Wi-Fi, el puerto UDP 8443 y los permisos de red local.')), 10000); })
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
     const stream = await transport.createBidirectionalStream();
     const writer = stream.writable.getWriter();
     await writer.write(new TextEncoder().encode(JSON.stringify({ type: 'pair', pin }) + '\n'));
