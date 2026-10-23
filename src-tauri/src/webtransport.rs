@@ -5,7 +5,7 @@
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{oneshot, Mutex, Semaphore}, time::timeout};
+use tokio::{sync::{oneshot, Mutex, Semaphore}, time::timeout};
 use tokio_util::sync::CancellationToken;
 use wtransport::{tls::Sha256DigestFmt, Endpoint, Identity, ServerConfig};
 
@@ -131,8 +131,8 @@ pub async fn run(
                         let mut byte = [0u8; 1];
                         loop {
                             let count = match receive.read(&mut byte).await {
-                                Ok(count) => count,
-                                Err(_) => return None,
+                                Ok(Some(count)) => count,
+                                Ok(None) | Err(_) => return None,
                             };
                             if count == 0 { return None; }
                             if byte[0] == b'\n' { return Some(bytes); }
