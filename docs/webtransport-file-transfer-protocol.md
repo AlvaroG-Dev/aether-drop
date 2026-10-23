@@ -44,9 +44,10 @@ Common response fields:
 - [x] `upload.start`, `upload.status`, `upload.chunk`, `upload.finish`, and `upload.cancel`, routed through the existing hardened upload handlers.
 - [x] `download.start` and bounded binary `download.read` responses, with session/device-bound expiring tickets and the shared concurrent-download limit.
 - [x] `clipboard.get` and `clipboard.set`, with a 1 MiB cap and binary UTF-8 payloads.
-- [ ] Browser UI using this transport end-to-end, plus integration tests against real browser/desktop builds.
+- [x] Browser UI for pairing, file listing, chunked upload/download, and clipboard over this transport; no HTTP transfer fallback.
+- [ ] End-to-end automated tests with a real browser and desktop server, including disconnect/revocation and large-file cases.
 
-Unsupported operations return a stable error and must not be routed to the legacy HTTP endpoints as a fallback. Until the remaining items and the browser integration are complete and verified, this branch is development work and must not be presented as secure end-to-end file transfer.
+Unsupported operations return a stable error and must not be routed to the legacy HTTP endpoints as a fallback. Until end-to-end browser/desktop tests pass, this branch is development work and must not be presented as verified secure end-to-end file transfer.
 
 ### Browser client module
 
