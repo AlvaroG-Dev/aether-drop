@@ -34,6 +34,9 @@ pub struct ResponseHeader {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_bytes: Option<u64>,
+    /// Bounded, operation-specific JSON metadata. Binary bytes remain outside JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +172,21 @@ mod tests {
         let decoded: RequestHeader = decode_header(&encoded).unwrap();
         assert_eq!(decoded, request);
         validate_request(&decoded).unwrap();
+    }
+
+    #[test]
+    fn response_headers_round_trip_metadata_without_binary_payload() {
+        let response = ResponseHeader {
+            version: PROTOCOL_VERSION,
+            request_id: "req_01".to_owned(),
+            ok: true,
+            error: None,
+            payload_bytes: None,
+            result: Some(serde_json::json!({"files": [{"id": "f1", "name": "example.txt"}]})),
+        };
+        let encoded = encode_header(&response).unwrap();
+        let decoded: ResponseHeader = decode_header(&encoded).unwrap();
+        assert_eq!(decoded, response);
     }
 
     #[test]
