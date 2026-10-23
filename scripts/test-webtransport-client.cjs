@@ -7,7 +7,7 @@ globalThis.isSecureContext = true;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const state = { instances: [], streamsOpened: 0, pairRequest: null, extraResponseBytes: null, extraPairBytes: null };
+const state = { instances: [], streamsOpened: 0, pairRequest: null, extraResponseBytes: null, extraPairBytes: null, truncateResponse: false };
 
 class ByteQueue {
   constructor() { this.items = []; this.waiters = []; this.closed = false; }
@@ -107,7 +107,8 @@ class FakeWebTransport {
             result,
             ...(payload === null ? {} : { payload_bytes: payload.length }),
           };
-          queue.push(frame(response, payload));
+          const responseFrame = frame(response, payload);
+          queue.push(state.truncateResponse ? responseFrame.subarray(0, 3) : responseFrame);
           if (state.extraResponseBytes) queue.push(state.extraResponseBytes);
           queue.end();
         },
@@ -160,6 +161,9 @@ globalThis.WebTransport = FakeWebTransport;
   state.extraResponseBytes = new Uint8Array([0xde, 0xad]);
   await assert.rejects(client.request('session.check'), /trailing WebTransport response bytes/);
   state.extraResponseBytes = null;
+  state.truncateResponse = true;
+  await assert.rejects(client.request('session.check'), /Truncated WebTransport response/);
+  state.truncateResponse = false;
 
   await client.request('upload.chunk', { transfer_id: 't', chunk_index: 0, sha256: '0'.repeat(64) }, new Uint8Array([1, 2, 3]));
   const openedBeforeInvalid = state.streamsOpened;
