@@ -1,6 +1,6 @@
 # WebTransport file-transfer protocol
 
-Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser UI now downloads in bounded chunks. It uses the File System Access API to stream to disk where supported; browsers without that API are limited to files of 64 MiB or less to avoid buffering large files in memory. End-to-end browser/desktop testing remains pending. The browser probe remains a handshake diagnostic, not a file-transfer client.
+Status: **partial implementation; not ready for real transfers**. The endpoint supports PIN pairing, authenticated metadata operations, chunked upload/download, and clipboard access over framed WebTransport streams. The browser UI exposes those operations. It uses the File System Access API to stream downloads to disk where supported; browsers without that API are limited to files of 64 MiB or less to avoid buffering large files in memory. End-to-end browser/desktop testing remains pending. The browser probe remains a handshake diagnostic, not a file-transfer client.
 
 ## Security invariants
 
@@ -22,7 +22,7 @@ Status: **partial implementation; not ready for real transfers**. The endpoint n
 
 ## Framing
 
-Use one bidirectional stream per request/response operation. The first frame is a 4-byte unsigned big-endian header length followed by UTF-8 JSON. Reject header lengths of zero or above 64 KiB before allocation. For requests with a binary body (`upload.chunk`, `clipboard.set`), the request header declares its exact body length; cap each body at 8 MiB and stream it without buffering a whole file. `download.read` has no request body; the response header declares its binary body length. `clipboard.get` returns its text in bounded JSON metadata only if it fits the header, otherwise as a bounded UTF-8 binary body. Every declared length must match bytes received or sent exactly. A stream must be closed after one operation; never parse unbounded newline-delimited data or allocate based on untrusted lengths.
+Use one bidirectional stream per request/response operation. The first frame is a 4-byte unsigned big-endian header length followed by UTF-8 JSON. Reject header lengths of zero or above 64 KiB before allocation. For requests with a binary body (`upload.chunk`, `clipboard.set`), the request header declares its exact body length; cap each body at 8 MiB and stream it without buffering a whole file. `download.read` has no request body; the response header declares its binary body length. `clipboard.get` returns UTF-8 text as a bounded binary response body. Every declared length must match bytes received or sent exactly. A stream must be closed after one operation; never parse unbounded newline-delimited data or allocate based on untrusted lengths.
 
 Common request fields:
 - `version`: protocol version, initially `1`
@@ -57,7 +57,7 @@ Unsupported operations return a stable error and must not be routed to the legac
 - `session.check`: verify that the session exists, is unexpired, and has not been revoked.
 - `files.list`: list the explicitly shared PC files using opaque IDs and display names only.
 - `upload.start`, `upload.status`, `upload.chunk`, `upload.finish`, `upload.cancel`: preserve current bounded chunking, per-device quotas, disk-space reserve, cancellation, revalidation, hash checks, atomic no-overwrite publication, and resumability. Binary chunks must be streamed and capped; do not buffer whole files in memory.
-- `download.start` and `download.read`: authorize a one-use ticket against device/session/file, stream bounded chunks, and expire/cancel on revocation.
+- `download.start` and `download.read`: authorize a session/device-bound expiring ticket against the shared file, stream bounded chunks, and refresh the short expiry while active; the session must remain valid for every request.
 - `clipboard.get`, `clipboard.set`: enforce the existing 1 MiB text cap and reject malformed input.
 - `session.revoke` remains a desktop-local operation; a paired browser must not be able to revoke other devices.
 
