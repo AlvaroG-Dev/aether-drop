@@ -238,6 +238,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_header_rejects_oversize_prefix_before_body_read() {
+        let (mut tx, mut rx) = tokio::io::duplex(16);
+        tx.write_all(&((MAX_HEADER_BYTES as u32) + 1).to_be_bytes()).await.unwrap();
+        let error = read_header::<_, RequestHeader>(&mut rx).await.unwrap_err();
+        assert_eq!(error, FrameError::TooLarge);
+    }
+
+    #[tokio::test]
     async fn bounded_payload_rejects_oversize_before_reading() {
         let (mut tx, mut rx) = tokio::io::duplex(32);
         tx.write_all(b"payload").await.unwrap();
