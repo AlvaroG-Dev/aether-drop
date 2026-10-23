@@ -1,6 +1,6 @@
 # WebTransport file-transfer protocol
 
-Status: implementation plan; **not implemented**. The existing `webtransport.rs` endpoint is a pairing probe only. Do not treat this document or the probe as evidence that real transfers use WebTransport.
+Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser probe remains a handshake diagnostic, not a file-transfer client.
 
 ## Security invariants
 
@@ -35,6 +35,18 @@ Common response fields:
 - `version`, `request_id`, `ok`
 - successful operation result, or a stable non-sensitive error code
 - no filesystem paths, stack traces, PIN values, or secrets in errors
+
+## Implementation status
+
+- [x] Bounded length-prefixed JSON header framing and request validation.
+- [x] Pairing checks the PIN, validates an optional device ID, registers trusted devices within the existing device cap, and issues an expiring server-side session.
+- [x] Authenticated `session.check` and `files.list` dispatch over separate bidirectional streams.
+- [ ] `upload.start`, `upload.status`, `upload.chunk`, `upload.finish`, and `upload.cancel`.
+- [ ] `download.start` and bounded binary `download.read` responses.
+- [ ] `clipboard.get` and `clipboard.set`.
+- [ ] Browser UI using this transport end-to-end, plus integration tests against real browser/desktop builds.
+
+Unsupported operations return a stable error and must not be routed to the legacy HTTP endpoints as a fallback. Until the remaining items and the browser integration are complete and verified, this branch is development work and must not be presented as secure end-to-end file transfer.
 
 ## Required operations
 
