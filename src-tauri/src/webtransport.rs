@@ -251,7 +251,9 @@ pub async fn run(
                                 result: None,
                             },
                         };
-                        let _ = super::webtransport_protocol::write_header(&mut response_stream, &response).await;
+                        if let Ok(frame) = super::webtransport_protocol::encode_header(&response) {
+                            let _ = response_stream.write_all(&frame).await;
+                        }
                         let _ = response_stream.finish().await;
                     }
                 });
