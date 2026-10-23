@@ -2434,7 +2434,7 @@ fn start_local_server(state: AppState) {
             // only; file traffic is not routed through it yet.
             let (webtransport_ready_tx, webtransport_ready_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(webtransport::run(
-                state.pin.clone(),
+                state.clone(),
                 state.server_shutdown.clone(),
                 webtransport_ready_tx,
             ));
