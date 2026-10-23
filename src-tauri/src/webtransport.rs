@@ -188,6 +188,16 @@ pub async fn run(
                                     cancellation: CancellationToken::new(),
                                 });
                                 issued_token = Some(token);
+                                drop(sessions);
+                                drop(devices);
+                                let stale_transfers: Vec<String> = state.pending_uploads.read().await
+                                    .iter()
+                                    .filter(|(_, upload)| upload.owner_device_id == device_id)
+                                    .map(|(transfer_id, _)| transfer_id.clone())
+                                    .collect();
+                                for transfer_id in stale_transfers {
+                                    super::remove_pending_upload(&state, &transfer_id).await;
+                                }
                             }
                         }
                     } else {
