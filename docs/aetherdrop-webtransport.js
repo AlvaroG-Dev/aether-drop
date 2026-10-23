@@ -95,7 +95,6 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
 
   const transport = new WebTransport(`https://${host}:${port}/aetherdrop-wt-probe-v1`, {
     allowPooling: false,
-    requireUnreliable: true,
     serverCertificateHashes: [{ algorithm: "sha-256", value: hexBytes(hash) }],
   });
   try {
@@ -103,7 +102,7 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
     const stream = await transport.createBidirectionalStream();
     const writer = stream.writable.getWriter();
     const reader = stream.readable.getReader();
-    await writer.write(encoder.encode(JSON.stringify({ type: "pair", pin, device_id: deviceId }) + "\n"));
+    await writer.write(encoder.encode(JSON.stringify({ type: "pair", version: PROTOCOL_VERSION, pin, device_id: deviceId }) + "\n"));
     await writer.close();
     const paired = await withTimeout(readJsonLine(reader), 10000, 'Timed out waiting for the pairing response');
     if (!paired.ok || paired.protocol !== "aetherdrop-webtransport-v1" ||
