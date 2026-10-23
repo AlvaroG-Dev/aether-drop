@@ -28,6 +28,7 @@ pub struct WebTransportInfo {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PairRequest {
     #[serde(rename = "type")]
     kind: String,
