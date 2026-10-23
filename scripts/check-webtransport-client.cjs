@@ -11,6 +11,12 @@ if (!html.includes('src="./sha256.js"')) {
   console.error('WebTransport client is missing the incremental SHA-256 helper');
   process.exit(1);
 }
+const sourceSha256 = fs.readFileSync('src-tauri/src/sha256.js', 'utf8');
+const browserSha256 = fs.readFileSync('docs/sha256.js', 'utf8');
+if (sourceSha256 !== browserSha256) {
+  console.error('Browser SHA-256 helper differs from the tested desktop helper');
+  process.exit(1);
+}
 const transportClient = fs.readFileSync('docs/aetherdrop-webtransport.js', 'utf8');
 if (!transportClient.includes('serverCertificateHashes') || !transportClient.includes('new WebTransport')) {
   console.error('WebTransport client must pin the certificate before pairing');
