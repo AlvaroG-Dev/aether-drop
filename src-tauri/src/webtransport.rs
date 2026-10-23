@@ -354,6 +354,8 @@ async fn dispatch_request(
             }.ok_or("file_not_found")?;
             let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|_| "file_unavailable")?;
             if !metadata.file_type().is_file() { return Err("file_unavailable"); }
+            let canonical = tokio::fs::canonicalize(&path).await.map_err(|_| "file_unavailable")?;
+            if canonical != path { return Err("file_unavailable"); }
             let ticket = format!("wt{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
             let now = Instant::now();
             let mut tickets = state.download_tickets.write().await;
@@ -403,12 +405,18 @@ async fn dispatch_request(
                 files.iter().find(|(id, _)| id == &ticket.file_id).map(|(_, path)| path.clone())
             }.ok_or("file_not_found")?;
             let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|_| "file_unavailable")?;
-            if !metadata.file_type().is_file()
-                || offset.checked_add(length).is_none_or(|end| end > metadata.len())
-            {
+            let canonical = tokio::fs::canonicalize(&path).await.map_err(|_| "file_unavailable")?;
+            if !metadata.file_type().is_file() || canonical != path {
+                return Err("file_unavailable");
+            }
+            if offset.checked_add(length).is_none_or(|end| end > metadata.len()) {
                 return Err("invalid_range");
             }
-            let mut file = tokio::fs::File::open(&path).await.map_err(|_| "file_unavailable")?;
+            let mut file = tokio::fs::File::open(&canonical).await.map_err(|_| "file_unavailable")?;
+            let opened_metadata = file.metadata().await.map_err(|_| "file_unavailable")?;
+            if !opened_metadata.is_file() || opened_metadata.len() != metadata.len() {
+                return Err("file_changed");
+            }
             file.seek(std::io::SeekFrom::Start(offset)).await.map_err(|_| "file_unavailable")?;
             let mut body = vec![0u8; length as usize];
             file.read_exact(&mut body).await.map_err(|_| "file_changed")?;
