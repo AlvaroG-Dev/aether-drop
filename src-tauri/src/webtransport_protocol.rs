@@ -47,6 +47,7 @@ pub enum FrameError {
     InvalidJson,
     UnsupportedVersion,
     InvalidRequestId,
+    InvalidSession,
     InvalidOperation,
     InvalidLength,
 }
@@ -60,6 +61,7 @@ impl std::fmt::Display for FrameError {
             Self::InvalidJson => "protocol header is invalid JSON",
             Self::UnsupportedVersion => "unsupported protocol version",
             Self::InvalidRequestId => "invalid request identifier",
+            Self::InvalidSession => "invalid session credential",
             Self::InvalidOperation => "invalid operation",
             Self::InvalidLength => "invalid payload length",
         })
@@ -241,7 +243,7 @@ mod tests {
     fn requires_session_and_correct_binary_payload_shape() {
         let mut request = valid_request();
         request.session = None;
-        assert!(matches!(validate_request(&request), Err(FrameError::InvalidRequestId)));
+        assert!(matches!(validate_request(&request), Err(FrameError::InvalidSession)));
         request.session = Some("valid_token-123".to_owned());
         assert!(validate_request(&request).is_ok());
         request.op = "upload.chunk".to_owned();
