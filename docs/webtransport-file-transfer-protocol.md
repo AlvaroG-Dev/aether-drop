@@ -1,6 +1,6 @@
 # WebTransport file-transfer protocol
 
-Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser UI now downloads in bounded chunks. It uses the File System Access API to stream to disk where supported; browsers without that API are limited to files of 64 MiB or less to avoid buffering large files in memory. Upload and clipboard operations and end-to-end browser testing remain pending. The browser probe remains a handshake diagnostic, not a file-transfer client.
+Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser UI now downloads in bounded chunks. It uses the File System Access API to stream to disk where supported; browsers without that API are limited to files of 64 MiB or less to avoid buffering large files in memory. Clipboard operations and end-to-end browser testing remain pending. The browser probe remains a handshake diagnostic, not a file-transfer client.
 
 ## Security invariants
 
@@ -41,7 +41,7 @@ Common response fields:
 - [x] Bounded length-prefixed JSON header framing and request validation.
 - [x] Pairing checks the PIN, validates an optional device ID, registers trusted devices within the existing device cap, and issues an expiring server-side session.
 - [x] Authenticated `session.check` and `files.list` dispatch over separate bidirectional streams.
-- [ ] `upload.start`, `upload.status`, `upload.chunk`, `upload.finish`, and `upload.cancel`.
+- [x] `upload.start`, `upload.status`, `upload.chunk`, `upload.finish`, and `upload.cancel`, routed through the existing hardened upload handlers.
 - [x] `download.start` and bounded binary `download.read` responses, with session/device-bound expiring tickets and the shared concurrent-download limit.
 - [ ] `clipboard.get` and `clipboard.set`.
 - [ ] Browser UI using this transport end-to-end, plus integration tests against real browser/desktop builds.
