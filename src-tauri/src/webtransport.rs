@@ -276,7 +276,7 @@ pub async fn run(
                         let (response, response_body) = match result {
                             Ok((value, body)) => (ResponseHeader {
                                 version: super::webtransport_protocol::PROTOCOL_VERSION,
-                                request_id: request_header.request_id,
+                                request_id: request_header.request_id.clone(),
                                 ok: true,
                                 error: None,
                                 payload_bytes: body.as_ref().map(|bytes| bytes.len() as u64),
