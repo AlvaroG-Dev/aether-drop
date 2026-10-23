@@ -3,7 +3,9 @@
 //! operations remain unavailable until their handlers and end-to-end tests are complete.
 
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
-use super::{AppState, DownloadTicket, SessionRecord, UPLOAD_CHUNK_BYTES};
+use super::{AppState, AuthorizedSession, DownloadTicket, SessionRecord, UploadFinishRequest, UploadRequestPermit, UploadStartRequest, UPLOAD_CHUNK_BYTES};
+use axum::{extract::{Extension, Path as AxumPath, State}, http::{HeaderMap, HeaderValue, StatusCode}, Json};
+use bytes::Bytes;
 use super::webtransport_protocol::ResponseHeader;
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
@@ -348,6 +350,19 @@ async fn read_stream_exact(
     Ok(())
 }
 
+fn upload_status_code(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "unauthorized",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::CONFLICT => "conflict",
+        StatusCode::TOO_MANY_REQUESTS => "too_many_requests",
+        StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+        StatusCode::INSUFFICIENT_STORAGE => "insufficient_storage",
+        StatusCode::GONE => "expired",
+        _ => "transfer_failed",
+    }
+}
+
 async fn dispatch_request(
     state: &AppState,
     request: &super::webtransport_protocol::RequestHeader,
@@ -363,7 +378,75 @@ async fn dispatch_request(
     {
         return Err("unauthorized");
     }
+    let authorized = AuthorizedSession {
+        token: token.to_owned(),
+        device_id: session.device_id.clone(),
+        expires_at: session.expires_at,
+        cancellation: session.cancellation.clone(),
+    };
     match request.op.as_str() {
+        "upload.start" => {
+            let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
+            if data.len() != 2 { return Err("invalid_request"); }
+            let filename = data.get("filename").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
+            let size_bytes = data.get("size_bytes").and_then(serde_json::Value::as_u64).ok_or("invalid_request")?;
+            let result = super::start_chunked_upload(State(state.clone()), Extension(authorized.clone()),
+                Json(UploadStartRequest { filename: filename.to_owned(), size_bytes })).await;
+            match result {
+                Ok(Json(value)) => Ok((serde_json::to_value(value).map_err(|_| "internal_error")?, None)),
+                Err((status, _)) => Err(upload_status_code(status)),
+            }
+        }
+        "upload.status" => {
+            let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
+            if data.len() != 1 { return Err("invalid_request"); }
+            let transfer_id = data.get("transfer_id").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
+            let result = super::chunked_upload_status(State(state.clone()), Extension(authorized.clone()),
+                AxumPath(transfer_id.to_owned())).await;
+            match result {
+                Ok(Json(value)) => Ok((serde_json::to_value(value).map_err(|_| "internal_error")?, None)),
+                Err((status, _)) => Err(upload_status_code(status)),
+            }
+        }
+        "upload.chunk" => {
+            let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
+            if data.len() != 3 || request.payload_bytes.is_none() { return Err("invalid_request"); }
+            let transfer_id = data.get("transfer_id").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
+            let chunk_index = data.get("chunk_index").and_then(serde_json::Value::as_u64).ok_or("invalid_request")?;
+            let sha256 = data.get("sha256").and_then(serde_json::Value::as_str).filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).ok_or("invalid_request")?;
+            let body = body.ok_or("invalid_request")?;
+            let permit = state.upload_slots.clone().try_acquire_owned().map_err(|_| "too_many_requests")?;
+            let mut headers = HeaderMap::new();
+            headers.insert("x-chunk-sha256", HeaderValue::from_str(sha256).map_err(|_| "invalid_request")?);
+            let result = super::upload_chunk(State(state.clone()), Extension(authorized.clone()),
+                Extension(UploadRequestPermit { _permit: Arc::new(permit) }),
+                AxumPath((transfer_id.to_owned(), chunk_index)), headers, Bytes::from(body)).await;
+            match result {
+                Ok(Json(value)) => Ok((serde_json::to_value(value).map_err(|_| "internal_error")?, None)),
+                Err((status, _)) => Err(upload_status_code(status)),
+            }
+        }
+        "upload.finish" => {
+            let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
+            if data.len() != 2 { return Err("invalid_request"); }
+            let transfer_id = data.get("transfer_id").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
+            let sha256 = data.get("sha256").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
+            let result = super::finish_chunked_upload(State(state.clone()), Extension(authorized.clone()),
+                AxumPath(transfer_id.to_owned()), Json(UploadFinishRequest { sha256: sha256.to_owned() })).await;
+            match result {
+                Ok(Json(value)) => Ok((serde_json::to_value(value).map_err(|_| "internal_error")?, None)),
+                Err((status, _)) => Err(upload_status_code(status)),
+            }
+        }
+        "upload.cancel" => {
+            let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
+            if data.len() != 1 { return Err("invalid_request"); }
+            let transfer_id = data.get("transfer_id").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
+            let status = super::cancel_chunked_upload(State(state.clone()), Extension(authorized.clone()),
+                AxumPath(transfer_id.to_owned())).await;
+            if status.is_success() { Ok((serde_json::json!({"cancelled": true}), None)) }
+            else { Err(upload_status_code(status)) }
+        }
         "session.check" => Ok((serde_json::json!({
             "valid": true,
             "expires_in": session.expires_at.saturating_duration_since(now).as_secs()
