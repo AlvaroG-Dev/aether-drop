@@ -131,6 +131,11 @@
     try {
       transferStatus.textContent = 'Preparando transferencia…';
       const start = await client.request('upload.start', { filename: file.name, size_bytes: file.size });
+      if (!start || typeof start.transfer_id !== 'string' || start.transfer_id.length < 1 ||
+          start.transfer_id.length > 128 || !Number.isSafeInteger(start.chunk_size) ||
+          start.chunk_size < 1 || start.chunk_size > 8 * 1024 * 1024) {
+        throw new Error('El PC ha devuelto parámetros de subida no válidos.');
+      }
       transferId = start.transfer_id;
       const wholeHash = window.sha256.create();
       let offset = 0;
@@ -219,6 +224,12 @@
               ? await window.showSaveFilePicker({ suggestedName: file.name })
               : null;
             const info = await client.request('download.start', { file_id: file.id });
+            if (!info || typeof info.ticket !== 'string' || !/^wt[A-Za-z0-9]+$/.test(info.ticket) ||
+                typeof info.name !== 'string' || !Number.isSafeInteger(info.size_bytes) ||
+                info.size_bytes < 0 || !Number.isSafeInteger(info.chunk_size) ||
+                info.chunk_size < 1 || info.chunk_size > 8 * 1024 * 1024) {
+              throw new Error('El PC ha devuelto metadatos de descarga no válidos.');
+            }
             const blobLimit = 64 * 1024 * 1024;
             if (!canStreamToDisk && info.size_bytes > blobLimit) {
               throw new Error('Este navegador no permite guardar archivos grandes por bloques. Prueba Chrome o Chromium actualizado; no se ha descargado el archivo.');
