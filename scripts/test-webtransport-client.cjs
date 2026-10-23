@@ -7,7 +7,7 @@ globalThis.isSecureContext = true;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const state = { instances: [], streamsOpened: 0, pairRequest: null, extraResponseBytes: null };
+const state = { instances: [], streamsOpened: 0, pairRequest: null, extraResponseBytes: null, extraPairBytes: null };
 
 class ByteQueue {
   constructor() { this.items = []; this.waiters = []; this.closed = false; }
@@ -77,6 +77,7 @@ class FakeWebTransport {
               token: 'a'.repeat(64),
               expires_in: 43200,
             }) + '\n'));
+            if (state.extraPairBytes) queue.push(state.extraPairBytes);
             queue.end();
             return;
           }
@@ -136,6 +137,15 @@ globalThis.WebTransport = FakeWebTransport;
   assert.equal(transport.options.serverCertificateHashes[0].value.length, 32);
   assert.equal(state.pairRequest.version, 1);
   assert.equal(state.pairRequest.device_id, 'dev_test123');
+
+  state.extraPairBytes = encoder.encode('unexpected');
+  await assert.rejects(connectAetherDrop({
+    host: '192.168.1.20',
+    hash: 'ab'.repeat(32),
+    pin: '123456',
+    deviceId: 'dev_test123',
+  }), /trailing pairing response bytes/);
+  state.extraPairBytes = null;
 
   assert.deepEqual(await client.request('session.check'), { valid: true, expires_in: 43200 });
   assert.deepEqual(await client.request('files.list'), []);
