@@ -223,9 +223,12 @@ pub async fn run(
                         return;
                     }
                     loop {
-                        let streams = match timeout(Duration::from_secs(120), connection.accept_bi()).await {
-                            Ok(Ok(streams)) => streams,
-                            _ => return,
+                        let streams = tokio::select! {
+                            _ = state.server_shutdown.cancelled() => return,
+                            result = timeout(Duration::from_secs(120), connection.accept_bi()) => match result {
+                                Ok(Ok(streams)) => streams,
+                                _ => return,
+                            }
                         };
                         let (mut response_stream, mut request_stream) = streams;
                         let request_header = match timeout(Duration::from_secs(10), read_request_header(&mut request_stream)).await {
