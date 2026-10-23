@@ -113,6 +113,10 @@ pub async fn run(
                         }
                     };
                     let remote_ip = request.remote_address().ip();
+                    if !super::is_lan_peer_address(remote_ip) {
+                        let _ = request.forbidden().await;
+                        return;
+                    }
                     let blocked = {
                         let now = Instant::now();
                         let mut failures = auth_failures.lock().await;
