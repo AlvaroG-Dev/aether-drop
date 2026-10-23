@@ -22,6 +22,10 @@ if (!transportClient.includes('serverCertificateHashes') || !transportClient.inc
   console.error('WebTransport client must pin the certificate before pairing');
   process.exit(1);
 }
+if (!transportClient.includes('version: PROTOCOL_VERSION') || transportClient.includes('requireUnreliable: true')) {
+  console.error('WebTransport pairing must declare its protocol version and must not require unused datagrams');
+  process.exit(1);
+}
 if (/\bfetch\s*\(|XMLHttpRequest/.test(transportClient + match[1])) {
   console.error('WebTransport client must not contain an HTTP transfer fallback');
   process.exit(1);
