@@ -128,7 +128,17 @@ pub fn validate_request(header: &RequestHeader) -> Result<(), FrameError> {
     if !ALLOWED_OPS.contains(&header.op.as_str()) {
         return Err(FrameError::InvalidOperation);
     }
+    // Pairing is a separate PIN-only handshake; application operations require a session.
+    if header.session.as_deref().map_or(true, |session| {
+        session.is_empty() || session.len() > 256 || !session.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    }) {
+        return Err(FrameError::InvalidRequestId);
+    }
     if header.payload_bytes.is_some_and(|length| length > 2 * 1024 * 1024 * 1024) {
+        return Err(FrameError::InvalidLength);
+    }
+    let binary_operation = matches!(header.op.as_str(), "upload.chunk" | "download.read");
+    if binary_operation != header.payload_bytes.is_some() {
         return Err(FrameError::InvalidLength);
     }
     Ok(())
@@ -203,6 +213,21 @@ mod tests {
         request.op = "files.list".to_owned();
         request.request_id = "not valid".to_owned();
         assert!(matches!(validate_request(&request), Err(FrameError::InvalidRequestId)));
+    }
+
+    #[test]
+    fn requires_session_and_correct_binary_payload_shape() {
+        let mut request = valid_request();
+        request.session = None;
+        assert!(matches!(validate_request(&request), Err(FrameError::InvalidRequestId)));
+        request.session = Some("valid_token-123".to_owned());
+        assert!(validate_request(&request).is_ok());
+        request.op = "upload.chunk".to_owned();
+        assert!(matches!(validate_request(&request), Err(FrameError::InvalidLength)));
+        request.payload_bytes = Some(1024);
+        assert!(validate_request(&request).is_ok());
+        request.op = "files.list".to_owned();
+        assert!(matches!(validate_request(&request), Err(FrameError::InvalidLength)));
     }
 
     #[test]
