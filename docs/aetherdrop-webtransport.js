@@ -17,6 +17,19 @@ function withTimeout(promise, milliseconds, message) {
   ]).finally(() => clearTimeout(timer));
 }
 
+function isLanIpv4(host) {
+  const parts = host.split(".");
+  if (parts.length !== 4 || parts.some(part => !/^(0|[1-9][0-9]{0,2})$/.test(part))) return false;
+  const octets = parts.map(Number);
+  if (octets.some(part => part > 255)) return false;
+  const [a, b] = octets;
+  return a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254) ||
+    a === 127;
+}
+
 function hexBytes(hex) {
   if (!/^[a-fA-F0-9]{64}$/.test(hex)) throw new Error("Invalid SHA-256 certificate hash");
   return Uint8Array.from(hex.match(/../g), byte => Number.parseInt(byte, 16));
@@ -75,7 +88,7 @@ async function readJsonLine(reader, limit = 512) {
 export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443 }) {
   if (!/^[0-9]{6}$/.test(pin)) throw new Error("PIN must contain six digits");
   if (!/^dev_[A-Za-z0-9_-]{1,60}$/.test(deviceId)) throw new Error("Invalid device identifier");
-  if (!/^[A-Za-z0-9.:-]+$/.test(host) || host.includes("..")) throw new Error("Invalid host");
+  if (!isLanIpv4(host)) throw new Error("The PC address must be a private IPv4 address on your LAN");
   if (!("WebTransport" in globalThis) || !globalThis.isSecureContext) {
     throw new Error("This browser does not support WebTransport in a secure context");
   }
