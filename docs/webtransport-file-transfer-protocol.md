@@ -1,6 +1,6 @@
 # WebTransport file-transfer protocol
 
-Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser client module can request bounded download chunks, but the current HTML UI only lists files and does not yet expose a complete save-to-disk workflow. The browser probe remains a handshake diagnostic, not a file-transfer client.
+Status: **partial implementation; not ready for real transfers**. The endpoint now supports PIN pairing that issues a server-side session and authenticated `session.check` / `files.list` requests over framed WebTransport streams. Upload, download, and clipboard operations are not yet implemented over WebTransport. The browser UI now downloads in bounded chunks. It uses the File System Access API to stream to disk where supported; browsers without that API are limited to files of 64 MiB or less to avoid buffering large files in memory. Upload and clipboard operations and end-to-end browser testing remain pending. The browser probe remains a handshake diagnostic, not a file-transfer client.
 
 ## Security invariants
 
