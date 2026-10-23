@@ -386,11 +386,13 @@ async fn dispatch_request(
     };
     match request.op.as_str() {
         "clipboard.get" => {
+            if request.data.is_some() { return Err("invalid_request"); }
             let text = state.clipboard_text.read().await.clone();
             if text.len() > MAX_CLIPBOARD_BYTES { return Err("clipboard_too_large"); }
             Ok((serde_json::json!({"encoding": "utf-8", "bytes": text.len()}), Some(text.into_bytes())))
         }
         "clipboard.set" => {
+            if request.data.is_some() { return Err("invalid_request"); }
             let bytes = body.ok_or("invalid_request")?;
             if bytes.len() > MAX_CLIPBOARD_BYTES { return Err("payload_too_large"); }
             let text = String::from_utf8(bytes).map_err(|_| "invalid_utf8")?;
@@ -462,11 +464,15 @@ async fn dispatch_request(
             if status.is_success() { Ok((serde_json::json!({"cancelled": true}), None)) }
             else { Err(upload_status_code(status)) }
         }
-        "session.check" => Ok((serde_json::json!({
+        "session.check" => {
+            if request.data.is_some() { return Err("invalid_request"); }
+            Ok((serde_json::json!({
             "valid": true,
             "expires_in": session.expires_at.saturating_duration_since(now).as_secs()
-        }), None)),
+        }), None))
+        }
         "files.list" => {
+            if request.data.is_some() { return Err("invalid_request"); }
             let files = state.pc_files.read().await;
             let items: Vec<serde_json::Value> = files.iter().map(|(id, path)| {
                 serde_json::json!({
