@@ -93,7 +93,7 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
       session: paired.token,
       expiresIn: paired.expires_in,
       async request(op, data) {
-        if (!["session.check", "files.list"].includes(op)) {
+        if (!["session.check", "files.list", "download.start", "download.read"].includes(op)) {
           throw new Error("This WebTransport operation is not implemented yet");
         }
         const requestId = crypto.randomUUID().replace(/-/g, "");
@@ -117,8 +117,16 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
           throw new Error("Response does not match the request");
         }
         if (!response.ok) throw new Error(response.error || "WebTransport request failed");
+        let binary = null;
+        if (response.payload_bytes !== undefined && response.payload_bytes !== null) {
+          if (!Number.isSafeInteger(response.payload_bytes) || response.payload_bytes < 0 ||
+              response.payload_bytes > 8 * 1024 * 1024) {
+            throw new Error("Response body exceeds the allowed chunk size");
+          }
+          binary = await responseReader.readExact(response.payload_bytes);
+        }
         await responseReader.cancel().catch(() => {});
-        return response.result;
+        return binary === null ? response.result : { result: response.result, payload: binary };
       },
       close() { transport.close({ closeCode: 0, reason: "Client closed" }); },
     };
