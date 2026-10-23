@@ -434,7 +434,7 @@ async fn dispatch_request(
             let body = body.ok_or("invalid_request")?;
             let permit = state.upload_slots.clone().try_acquire_owned().map_err(|_| "too_many_requests")?;
             let mut headers = HeaderMap::new();
-            headers.insert("x-chunk-sha256", HeaderValue::from_str(sha256).map_err(|_| "invalid_request")?);
+            headers.insert("x-chunk-sha256", sha256.parse::<HeaderValue>().map_err(|_| "invalid_request")?);
             let result = super::upload_chunk(State(state.clone()), Extension(authorized.clone()),
                 Extension(UploadRequestPermit { _permit: Arc::new(permit) }),
                 AxumPath((transfer_id.to_owned(), chunk_index)), headers, Bytes::from(body)).await;
