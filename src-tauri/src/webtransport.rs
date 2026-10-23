@@ -523,12 +523,17 @@ async fn dispatch_request(
         "files.list" => {
             if request.data.is_some() { return Err("invalid_request"); }
             let files = state.pc_files.read().await;
-            let items: Vec<serde_json::Value> = files.iter().map(|(id, path)| {
+            let mut items: Vec<serde_json::Value> = files.iter().map(|(id, path)| {
                 serde_json::json!({
                     "id": id,
                     "name": path.file_name().unwrap_or_default().to_string_lossy().chars().take(120).collect::<String>()
                 })
             }).collect();
+            // The whole metadata list must fit in one bounded JSON header. If many
+            // long/unusual filenames exceed it, return the largest prefix that fits.
+            while serde_json::to_vec(&items).map(|json| json.len() > super::webtransport_protocol::MAX_HEADER_BYTES - 1024).unwrap_or(true) {
+                if items.pop().is_none() { break; }
+            }
             Ok((serde_json::Value::Array(items), None))
         }
         "download.start" => {
