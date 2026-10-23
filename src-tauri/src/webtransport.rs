@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
 use super::{AppState, SessionRecord};
+use super::webtransport_protocol::ResponseHeader;
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::{oneshot, Mutex, Semaphore}, time::timeout};
