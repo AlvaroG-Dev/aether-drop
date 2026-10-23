@@ -774,10 +774,8 @@ mod tests {
             Some(Arc::new(download_permit)),
         ).await.unwrap();
         assert_eq!(body.as_ref().unwrap(), b"world");
-        assert_eq!(
-            read_metadata["sha256"].as_str(),
-            Some(&format!("{:x}", Sha256::digest(b"world")))
-        );
+        let expected_download_hash = format!("{:x}", Sha256::digest(b"world"));
+        assert_eq!(read_metadata["sha256"].as_str(), Some(expected_download_hash.as_str()));
 
         use sha2::{Digest, Sha256};
         let start_upload = super::super::webtransport_protocol::RequestHeader {
