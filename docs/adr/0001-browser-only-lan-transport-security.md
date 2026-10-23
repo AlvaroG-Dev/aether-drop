@@ -1,6 +1,6 @@
 # ADR: Browser-only LAN transport security
 
-- Status: accepted as the implementation direction; transport implementation remains pending
+- Status: accepted as the implementation direction; handshake probe works, real transfer transport remains pending
 - Date: 2026-10-22
 
 ## Requirements
@@ -49,6 +49,10 @@ The most promising browser-only experiment is:
 - Disabling TLS validation or hiding browser security warnings.
 - Sending file contents through a public relay.
 - Claiming end-to-end encryption before the protocol and implementation have been reviewed and tested.
+
+## Transfer protocol plan
+
+The framing, pairing/session requirements, required operations, migration sequence, and acceptance criteria are tracked in [the WebTransport file-transfer protocol](../webtransport-file-transfer-protocol.md). This is a specification, not an implementation; the existing probe endpoint still does not transfer files.
 
 ## Current security status
 
