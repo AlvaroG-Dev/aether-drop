@@ -688,6 +688,53 @@ mod tests {
         };
         let (_, body) = dispatch_request(&state, &read, None, None).await.unwrap();
         assert_eq!(body.unwrap(), b"world");
+
+        use sha2::{Digest, Sha256};
+        let start_upload = super::super::webtransport_protocol::RequestHeader {
+            version: super::super::webtransport_protocol::PROTOCOL_VERSION,
+            request_id: "upload_start".to_owned(),
+            op: "upload.start".to_owned(),
+            session: Some("test_token_123".to_owned()),
+            payload_bytes: None,
+            data: Some(serde_json::json!({"filename": "uploaded.txt", "size_bytes": 5})),
+        };
+        let (upload_metadata, _) = dispatch_request(&state, &start_upload, None, None).await.unwrap();
+        let transfer_id = upload_metadata["transfer_id"].as_str().unwrap().to_owned();
+        let hash = format!("{:x}", Sha256::digest(b"world"));
+        let upload_chunk = super::super::webtransport_protocol::RequestHeader {
+            version: super::super::webtransport_protocol::PROTOCOL_VERSION,
+            request_id: "upload_chunk".to_owned(),
+            op: "upload.chunk".to_owned(),
+            session: Some("test_token_123".to_owned()),
+            payload_bytes: Some(5),
+            data: Some(serde_json::json!({
+                "transfer_id": transfer_id,
+                "chunk_index": 0,
+                "sha256": hash,
+            })),
+        };
+        let permit = state.upload_slots.clone().try_acquire_owned().unwrap();
+        dispatch_request(
+            &state,
+            &upload_chunk,
+            Some(b"world".to_vec()),
+            Some(UploadRequestPermit { _permit: Arc::new(permit) }),
+        ).await.unwrap();
+        let finish_upload = super::super::webtransport_protocol::RequestHeader {
+            version: super::super::webtransport_protocol::PROTOCOL_VERSION,
+            request_id: "upload_finish".to_owned(),
+            op: "upload.finish".to_owned(),
+            session: Some("test_token_123".to_owned()),
+            payload_bytes: None,
+            data: Some(serde_json::json!({
+                "transfer_id": transfer_id,
+                "sha256": hash,
+            })),
+        };
+        let (receipt, _) = dispatch_request(&state, &finish_upload, None, None).await.unwrap();
+        assert_eq!(receipt["files"][0]["filename"], "uploaded.txt");
+        assert_eq!(tokio::fs::read(dir.join("uploaded.txt")).await.unwrap(), b"world");
+
         tokio::fs::remove_file(path).await.unwrap();
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
