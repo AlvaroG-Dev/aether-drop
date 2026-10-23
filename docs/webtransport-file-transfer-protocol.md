@@ -22,7 +22,7 @@ Status: implementation plan; **not implemented**. The existing `webtransport.rs`
 
 ## Framing
 
-Use one bidirectional stream per request/response operation. The first frame is a 4-byte unsigned big-endian header length followed by UTF-8 JSON. Reject header lengths of zero or above 64 KiB before allocation. For operations with a binary body, the header declares its exact byte length and the server enforces the operation-specific cap. Responses use the same framing, with a JSON header followed by the declared binary payload. A stream must be closed after one operation; never parse unbounded newline-delimited data or allocate based on untrusted lengths.
+Use one bidirectional stream per request/response operation. The first frame is a 4-byte unsigned big-endian header length followed by UTF-8 JSON. Reject header lengths of zero or above 64 KiB before allocation. For requests with a binary body (`upload.chunk`, `clipboard.set`), the request header declares its exact body length; cap each body at 8 MiB and stream it without buffering a whole file. `download.read` has no request body; the response header declares its binary body length. `clipboard.get` returns its text in bounded JSON metadata only if it fits the header, otherwise as a bounded UTF-8 binary body. Every declared length must match bytes received or sent exactly. A stream must be closed after one operation; never parse unbounded newline-delimited data or allocate based on untrusted lengths.
 
 Common request fields:
 - `version`: protocol version, initially `1`
