@@ -63,6 +63,14 @@ function createByteReader(reader) {
       }
       return result;
     },
+    async ensureEof() {
+      if (pending.length !== 0) throw new Error("Unexpected trailing WebTransport response bytes");
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        if (value && value.length) throw new Error("Unexpected trailing WebTransport response bytes");
+      }
+    },
     async cancel() { return reader.cancel(); },
   };
 }
@@ -167,6 +175,11 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
             }
             binary = await withTimeout(responseReader.readExact(response.payload_bytes), 60000, "Timed out reading the response body");
           }
+          await withTimeout(
+            responseReader.ensureEof(),
+            10000,
+            "Timed out waiting for the response stream to close",
+          );
           return binary === null ? response.result : { result: response.result, payload: binary };
         } catch (error) {
           if (responseReader) await responseReader.cancel().catch(() => {});
