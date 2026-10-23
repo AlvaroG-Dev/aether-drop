@@ -3,7 +3,7 @@
 //! operations remain unavailable until their handlers and end-to-end tests are complete.
 
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
-use super::{AppState, SessionRecord};
+use super::{AppState, DownloadTicket, SessionRecord, UPLOAD_CHUNK_BYTES};
 use super::webtransport_protocol::ResponseHeader;
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
@@ -234,26 +234,29 @@ pub async fn run(
                             }
                         };
                         let result = dispatch_request(&state, &request_header).await;
-                        let response = match result {
-                            Ok(value) => ResponseHeader {
+                        let (response, response_body) = match result {
+                            Ok((value, body)) => (ResponseHeader {
                                 version: super::webtransport_protocol::PROTOCOL_VERSION,
                                 request_id: request_header.request_id,
                                 ok: true,
                                 error: None,
-                                payload_bytes: None,
+                                payload_bytes: body.as_ref().map(|bytes| bytes.len() as u64),
                                 result: Some(value),
-                            },
-                            Err(code) => ResponseHeader {
+                            }, body),
+                            Err(code) => (ResponseHeader {
                                 version: super::webtransport_protocol::PROTOCOL_VERSION,
                                 request_id: request_header.request_id,
                                 ok: false,
                                 error: Some(code.to_owned()),
                                 payload_bytes: None,
                                 result: None,
-                            },
+                            }, None),
                         };
                         if let Ok(frame) = super::webtransport_protocol::encode_header(&response) {
                             let _ = response_stream.write_all(&frame).await;
+                            if let Some(body) = response_body {
+                                let _ = response_stream.write_all(&body).await;
+                            }
                         }
                         let _ = response_stream.finish().await;
                     }
@@ -314,7 +317,7 @@ async fn read_stream_exact(
 async fn dispatch_request(
     state: &AppState,
     request: &super::webtransport_protocol::RequestHeader,
-) -> Result<serde_json::Value, &'static str> {
+) -> Result<(serde_json::Value, Option<Vec<u8>>), &'static str> {
     use super::webtransport_protocol::validate_request;
     validate_request(request).map_err(|_| "invalid_request")?;
     let token = request.session.as_deref().ok_or("unauthorized")?;
@@ -326,7 +329,10 @@ async fn dispatch_request(
         return Err("unauthorized");
     }
     match request.op.as_str() {
-        "session.check" => Ok(serde_json::json!({"valid": true, "expires_in": session.expires_at.saturating_duration_since(now).as_secs()})),
+        "session.check" => Ok((serde_json::json!({
+            "valid": true,
+            "expires_in": session.expires_at.saturating_duration_since(now).as_secs()
+        }), None)),
         "files.list" => {
             let files = state.pc_files.read().await;
             let items: Vec<serde_json::Value> = files.iter().map(|(id, path)| {
@@ -335,7 +341,69 @@ async fn dispatch_request(
                     "name": path.file_name().unwrap_or_default().to_string_lossy().to_string()
                 })
             }).collect();
-            Ok(serde_json::Value::Array(items))
+            Ok((serde_json::Value::Array(items), None))
+        }
+        "download.start" => {
+            let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
+            if data.len() != 1 { return Err("invalid_request"); }
+            let file_id = data.get("file_id").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
+            if file_id.is_empty() || file_id.len() > 128 { return Err("invalid_request"); }
+            let path = {
+                let files = state.pc_files.read().await;
+                files.iter().find(|(id, _)| id == file_id).map(|(_, path)| path.clone())
+            }.ok_or("file_not_found")?;
+            let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|_| "file_unavailable")?;
+            if !metadata.file_type().is_file() { return Err("file_unavailable"); }
+            let ticket = format!("wt{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+            let now = Instant::now();
+            let mut tickets = state.download_tickets.write().await;
+            tickets.retain(|_, item| item.expires_at > now);
+            if tickets.len() >= 512 { return Err("too_many_downloads"); }
+            tickets.insert(ticket.clone(), DownloadTicket {
+                file_id: file_id.to_owned(),
+                session_token: token.to_owned(),
+                device_id: session.device_id.clone(),
+                expires_at: now + Duration::from_secs(60),
+            });
+            Ok((serde_json::json!({
+                "ticket": ticket,
+                "name": path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                "size_bytes": metadata.len(),
+                "chunk_size": UPLOAD_CHUNK_BYTES,
+                "expires_in": 60
+            }), None))
+        }
+        "download.read" => {
+            let data = request.data.as_ref().and_then(serde_json::Value::as_object).ok_or("invalid_request")?;
+            if data.len() != 3 { return Err("invalid_request"); }
+            let ticket_token = data.get("ticket").and_then(serde_json::Value::as_str).ok_or("invalid_request")?;
+            let offset = data.get("offset").and_then(serde_json::Value::as_u64).ok_or("invalid_request")?;
+            let length = data.get("length").and_then(serde_json::Value::as_u64).ok_or("invalid_request")?;
+            if ticket_token.len() > 128 || length == 0 || length > UPLOAD_CHUNK_BYTES as u64 {
+                return Err("invalid_request");
+            }
+            let ticket = state.download_tickets.read().await.get(ticket_token).cloned().ok_or("download_expired")?;
+            if ticket.expires_at <= Instant::now()
+                || ticket.session_token != token
+                || ticket.device_id != session.device_id
+            {
+                return Err("download_expired");
+            }
+            let path = {
+                let files = state.pc_files.read().await;
+                files.iter().find(|(id, _)| id == &ticket.file_id).map(|(_, path)| path.clone())
+            }.ok_or("file_not_found")?;
+            let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|_| "file_unavailable")?;
+            if !metadata.file_type().is_file()
+                || offset.checked_add(length).is_none_or(|end| end > metadata.len())
+            {
+                return Err("invalid_range");
+            }
+            let mut file = tokio::fs::File::open(&path).await.map_err(|_| "file_unavailable")?;
+            file.seek(std::io::SeekFrom::Start(offset)).await.map_err(|_| "file_unavailable")?;
+            let mut body = vec![0u8; length as usize];
+            file.read_exact(&mut body).await.map_err(|_| "file_changed")?;
+            Ok((serde_json::json!({"offset": offset, "bytes": length}), Some(body)))
         }
         _ => Err("operation_not_implemented"),
     }
