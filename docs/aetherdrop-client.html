@@ -81,6 +81,9 @@
     localStorage.setItem(deviceKey, deviceId);
   }
   let client = null;
+  window.addEventListener('pagehide', () => {
+    if (client) client.close();
+  });
   function showStatus(message, type = '') {
     status.textContent = message;
     status.className = type;
