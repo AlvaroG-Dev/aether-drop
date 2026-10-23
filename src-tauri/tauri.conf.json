@@ -11,8 +11,8 @@
     "windows": [
       {
         "title": "AetherDrop",
-        "width": 900,
-        "height": 720,
+        "width": 820,
+        "height": 640,
         "minWidth": 640,
         "minHeight": 520,
         "resizable": true,
