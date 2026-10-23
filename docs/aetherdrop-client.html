@@ -44,6 +44,12 @@
     <input id="uploadFile" type="file">
     <button id="uploadButton" type="button">Enviar al PC</button>
     <p id="transferStatus" class="muted" role="status" aria-live="polite"></p>
+    <h2>Portapapeles</h2>
+    <label for="clipboardText">Texto sincronizado con el PC (máximo 1 MiB)</label>
+    <textarea id="clipboardText" rows="5" style="box-sizing:border-box;width:100%;border:1px solid #35435e;border-radius:10px;padding:12px;background:#0b1222;color:#fff;font:inherit"></textarea>
+    <button id="clipboardGet" type="button">Leer portapapeles del PC</button>
+    <button id="clipboardSet" type="button">Enviar texto al PC</button>
+    <p id="clipboardStatus" class="muted" role="status" aria-live="polite"></p>
   </section>
 </main>
 <script src="./sha256.js"></script>
@@ -61,6 +67,10 @@
   const uploadInput = document.querySelector('#uploadFile');
   const uploadButton = document.querySelector('#uploadButton');
   const transferStatus = document.querySelector('#transferStatus');
+  const clipboardText = document.querySelector('#clipboardText');
+  const clipboardGet = document.querySelector('#clipboardGet');
+  const clipboardSet = document.querySelector('#clipboardSet');
+  const clipboardStatus = document.querySelector('#clipboardStatus');
   hostInput.value = params.get('host') || '';
   hashInput.value = params.get('hash') || '';
   const deviceKey = 'aetherdrop_device_id';
@@ -75,6 +85,36 @@
     status.textContent = message;
     status.className = type;
   }
+  clipboardGet.addEventListener('click', async () => {
+    if (!client) { clipboardStatus.textContent = 'Conecta primero con el PC.'; return; }
+    clipboardGet.disabled = true;
+    try {
+      const result = await client.request('clipboard.get');
+      clipboardText.value = new TextDecoder('utf-8', { fatal: true }).decode(result.payload);
+      clipboardStatus.textContent = 'Texto recibido del portapapeles del PC.';
+    } catch (error) {
+      clipboardStatus.textContent = 'No se pudo leer el portapapeles: ' + String(error?.message || error);
+    } finally {
+      clipboardGet.disabled = false;
+    }
+  });
+  clipboardSet.addEventListener('click', async () => {
+    if (!client) { clipboardStatus.textContent = 'Conecta primero con el PC.'; return; }
+    const bytes = new TextEncoder().encode(clipboardText.value);
+    if (bytes.byteLength > 1024 * 1024) {
+      clipboardStatus.textContent = 'El texto supera el límite de 1 MiB.';
+      return;
+    }
+    clipboardSet.disabled = true;
+    try {
+      await client.request('clipboard.set', undefined, bytes);
+      clipboardStatus.textContent = 'Texto enviado al portapapeles del PC.';
+    } catch (error) {
+      clipboardStatus.textContent = 'No se pudo actualizar el portapapeles: ' + String(error?.message || error);
+    } finally {
+      clipboardSet.disabled = false;
+    }
+  });
   uploadButton.addEventListener('click', async () => {
     const file = uploadInput.files && uploadInput.files[0];
     if (!client) { showStatus('Conecta primero con el PC.', 'bad'); return; }
