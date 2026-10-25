@@ -1960,8 +1960,10 @@ async fn upload_chunk(
             Err((StatusCode::UNAUTHORIZED, "La sesión ha caducado."))
         }
         result = async {
-            file.write_all(&body).await?;
-            file.sync_data().await
+            // Keep the hot path asynchronous and avoid forcing a disk flush for every 8 MiB chunk.
+            // The finalization path performs sync_all() and verifies the full file from disk
+            // before publishing it, so durability and integrity are still checked before success.
+            file.write_all(&body).await
         } => result.map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "No se pudo escribir el bloque; comprueba el espacio disponible.")),
     };
     if let Err(error) = write_result {
