@@ -117,7 +117,14 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
     serverCertificateHashes: [{ algorithm: "sha-256", value: hexBytes(hash) }],
   });
   try {
-    await withTimeout(transport.ready, 10000, 'Timed out connecting to the PC');
+    try {
+      await withTimeout(transport.ready, 10000, 'Timed out connecting to the PC');
+    } catch (error) {
+      const detail = String(error?.message || error);
+      throw new Error(
+        'WebTransport no pudo completar el handshake seguro. Comprueba que la IP y la huella sean las de esta ejecución, que ambos dispositivos estén en la misma LAN y que el firewall permita UDP/8443. El PIN todavía no se ha enviado. Detalle: ' + detail,
+      );
+    }
     const stream = await transport.createBidirectionalStream();
     const writer = stream.writable.getWriter();
     const reader = stream.readable.getReader();
