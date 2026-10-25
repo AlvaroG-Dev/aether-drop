@@ -69,28 +69,35 @@
     async function initApp() {
       try {
         const info = await invoke('get_connection_info');
-        document.getElementById('serverUrl').innerText = info.url;
         const qr = document.getElementById('qrImage');
+        const webtransportStatus = document.getElementById('webtransportStatus');
+        const webtransportLink = document.getElementById('webtransportProbeLink');
+        const secureUrl = info.webtransport_probe_url;
+        const secureQr = info.webtransport_probe_qr_base64;
+        document.getElementById('serverUrl').innerText = secureUrl || 'Canal seguro no disponible';
         qr.onload = () => { document.getElementById('qrPlaceholder').hidden = true; };
-        qr.onerror = () => { document.getElementById('qrPlaceholder').textContent = 'No se pudo cargar el QR'; };
-        qr.src = info.qr_base64;
+        qr.onerror = () => {
+          qr.hidden = true;
+          document.getElementById('qrPlaceholder').hidden = false;
+          document.getElementById('qrPlaceholder').textContent = 'QR seguro no disponible';
+        };
+        if (secureUrl && secureQr) {
+          qr.src = secureQr;
+          qr.hidden = false;
+          webtransportLink.href = secureUrl;
+          webtransportLink.style.display = 'inline-block';
+          webtransportStatus.textContent = 'Escanea este único QR. La página se carga por HTTPS y la huella del certificado fija el canal directo al PC. Los datos no pasan por la web pública.';
+        } else {
+          qr.hidden = true;
+          document.getElementById('qrPlaceholder').hidden = false;
+          document.getElementById('qrPlaceholder').textContent = 'Canal seguro no disponible';
+          webtransportStatus.textContent = info.webtransport_error
+            ? 'No se genera un QR inseguro: ' + info.webtransport_error
+            : 'El canal seguro no está disponible. Reinicia la aplicación o revisa el registro; no hay alternativa HTTP.';
+          webtransportLink.style.display = 'none';
+        }
         document.getElementById('savePath').innerText = info.save_path;
         document.getElementById('pinDisplay').innerText = info.pin;
-
-        const webtransportStatus = document.getElementById('webtransportStatus');
-        const webtransportQr = document.getElementById('webtransportQr');
-        const webtransportLink = document.getElementById('webtransportProbeLink');
-        if (info.webtransport_probe_url && info.webtransport_probe_qr_base64) {
-          webtransportQr.src = info.webtransport_probe_qr_base64;
-          webtransportQr.hidden = false;
-          webtransportLink.href = info.webtransport_probe_url;
-          webtransportLink.style.display = 'inline-block';
-          webtransportStatus.textContent = 'Escanea este QR desde el móvil. La página necesita Internet para cargarse; los datos van directamente al PC por WebTransport cifrado. El cliente experimental admite subidas, descargas por bloques y portapapeles; todavía falta validar todo en navegador y hardware real.';
-        } else {
-          webtransportStatus.textContent = info.webtransport_error
-            ? 'Prueba no disponible: ' + info.webtransport_error
-            : 'El canal seguro todavía se está iniciando. Reinicia la aplicación si no aparece.';
-        }
       } catch (e) {
         document.getElementById('serverUrl').innerText = 'Servidor local no disponible';
         document.getElementById('qrPlaceholder').textContent = 'Servidor no disponible';
