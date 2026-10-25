@@ -144,7 +144,7 @@
       transferId = start.transfer_id;
       const wholeHash = window.sha256.create();
       const transferStartedAt = performance.now();
-      const metrics = { readMs: 0, wholeHashMs: 0, chunkHashMs: 0, requestMs: 0, chunks: 0 };
+      const metrics = { readMs: 0, wholeHashMs: 0, chunkHashMs: 0, requestMs: 0, serverChunkHashMs: 0, serverWholeHashMs: 0, serverWriteMs: 0, serverTotalMs: 0, chunks: 0 };
       transferMetrics.textContent = 'Midiendo lectura, hash y espera de red por bloques…';
       if (!globalThis.crypto?.subtle) {
         throw new Error('Este navegador no dispone de SHA-256 acelerado para transferencias seguras.');
@@ -166,8 +166,9 @@
         const chunkHash = Array.from(new Uint8Array(chunkDigest), byte => byte.toString(16).padStart(2, '0')).join('');
         metrics.chunkHashMs += performance.now() - chunkHashStartedAt;
         const requestStartedAt = performance.now();
+        let chunkResponse = null;
         try {
-          await client.request('upload.chunk', {
+          chunkResponse = await client.request('upload.chunk', {
             transfer_id: transferId,
             chunk_index: chunkIndex,
             sha256: chunkHash,
@@ -190,7 +191,7 @@
             // The server accepted the chunk and only its response was lost.
           } else if (progress.next_chunk === chunkIndex && progress.received_bytes === offset) {
             // The server did not commit the chunk; retry this exact chunk once.
-            await client.request('upload.chunk', {
+            chunkResponse = await client.request('upload.chunk', {
               transfer_id: transferId,
               chunk_index: chunkIndex,
               sha256: chunkHash,
@@ -200,6 +201,13 @@
           }
         } finally {
           metrics.requestMs += performance.now() - requestStartedAt;
+        }
+        const serverTiming = chunkResponse && chunkResponse.timing;
+        if (serverTiming) {
+          metrics.serverChunkHashMs += Number(serverTiming.chunk_hash_ms) || 0;
+          metrics.serverWholeHashMs += Number(serverTiming.whole_file_hash_update_ms) || 0;
+          metrics.serverWriteMs += Number(serverTiming.open_seek_write_ms) || 0;
+          metrics.serverTotalMs += Number(serverTiming.server_total_ms) || 0;
         }
         offset += bytes.length;
         chunkIndex += 1;
@@ -216,8 +224,12 @@
           'Bloques: ' + metrics.chunks + '\n' +
           'Lectura de archivo: ' + metrics.readMs.toFixed(1) + ' ms\n' +
           'Hash incremental del archivo: ' + metrics.wholeHashMs.toFixed(1) + ' ms\n' +
-          'SHA-256 por bloque: ' + metrics.chunkHashMs.toFixed(1) + ' ms\n' +
-          'Esperando respuesta del PC (incluye red y procesamiento del servidor): ' + metrics.requestMs.toFixed(1) + ' ms';
+          'SHA-256 por bloque (cliente): ' + metrics.chunkHashMs.toFixed(1) + ' ms\n' +
+          'Petición por bloques (envío + respuesta + servidor): ' + metrics.requestMs.toFixed(1) + ' ms\n' +
+          'Hash del bloque (servidor): ' + metrics.serverChunkHashMs.toFixed(1) + ' ms\n' +
+          'Hash incremental del archivo (servidor): ' + metrics.serverWholeHashMs.toFixed(1) + ' ms\n' +
+          'Abrir/posicionar/escribir en disco (servidor): ' + metrics.serverWriteMs.toFixed(1) + ' ms\n' +
+          'Procesamiento total medido en servidor: ' + metrics.serverTotalMs.toFixed(1) + ' ms';
       }
       transferStatus.textContent = 'Verificando el archivo completo…';
       const expectedWholeHash = wholeHash.hex();
@@ -248,7 +260,7 @@
       transferStatus.textContent = 'Archivo recibido y verificado: ' + file.name + ' · ' + finalMBps.toFixed(2) + ' MB/s';
       transferMetrics.textContent += '\n\nRESULTADO FINAL\nTiempo total (incluye verificación final): ' + totalSeconds.toFixed(2) + ' s\n' +
         'Velocidad efectiva total: ' + finalMBps.toFixed(2) + ' MB/s\n' +
-        'Tiempo en upload.finish/verificación final: ' + Math.max(0, performance.now() - transferStartedAt - metrics.readMs - metrics.wholeHashMs - metrics.chunkHashMs - metrics.requestMs).toFixed(1) + ' ms';
+        'Tiempo acumulado en servidor (bloques; hash + disco + resto): ' + metrics.serverTotalMs.toFixed(1) + ' ms';
       uploadInput.value = '';
       await refreshFiles();
     } catch (error) {
