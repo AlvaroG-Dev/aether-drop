@@ -296,6 +296,7 @@ pub async fn run(
                         } else {
                             None
                         };
+                        let body_read_started = Instant::now();
                         let mut request_body_fully_read = request_header.payload_bytes.is_none();
                         let request_body = if let Some(length) = request_header.payload_bytes {
                             let cap = if request_header.op == "clipboard.set" { super::MAX_CLIPBOARD_BYTES as u64 } else { UPLOAD_CHUNK_BYTES as u64 };
@@ -328,6 +329,13 @@ pub async fn run(
                         ) {
                             let _ = response_stream.finish().await;
                             continue;
+                        }
+                        if request_header.op == "upload.chunk" {
+                            eprintln!(
+                                "AetherDrop PERF upload.receive bytes={} body_read_ms={:.2}",
+                                request_header.payload_bytes.unwrap_or(0),
+                                body_read_started.elapsed().as_secs_f64() * 1000.0,
+                            );
                         }
                         let result = dispatch_request(&state, &request_header, request_body, upload_request_permit, download_request_permit.clone()).await;
                         let (response, response_body) = match result {
