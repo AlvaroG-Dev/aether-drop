@@ -138,13 +138,19 @@
       }
       transferId = start.transfer_id;
       const wholeHash = window.sha256.create();
+      if (!globalThis.crypto?.subtle) {
+        throw new Error('Este navegador no dispone de SHA-256 acelerado para transferencias seguras.');
+      }
       let offset = 0;
       let chunkIndex = 0;
       while (offset < file.size) {
         const buffer = await file.slice(offset, Math.min(file.size, offset + start.chunk_size)).arrayBuffer();
         const bytes = new Uint8Array(buffer);
         wholeHash.update(bytes);
-        const chunkHash = window.sha256.create().update(bytes).hex();
+        // Native Web Crypto hashes each chunk without the cost of the pure-JS implementation.
+        // The incremental whole-file hash remains streaming and does not load the whole file into RAM.
+        const chunkDigest = await crypto.subtle.digest('SHA-256', bytes);
+        const chunkHash = Array.from(new Uint8Array(chunkDigest), byte => byte.toString(16).padStart(2, '0')).join('');
         try {
           await client.request('upload.chunk', {
             transfer_id: transferId,
