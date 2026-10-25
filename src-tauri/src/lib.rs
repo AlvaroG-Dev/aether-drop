@@ -150,6 +150,14 @@ struct UploadStartResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct UploadChunkTiming {
+    chunk_hash_ms: f64,
+    whole_file_hash_update_ms: f64,
+    open_seek_write_ms: f64,
+    server_total_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
 struct UploadProgressResponse {
     filename: String,
     size_bytes: u64,
@@ -160,6 +168,8 @@ struct UploadProgressResponse {
     chunk_hashes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_receipt: Option<UploadReceipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timing: Option<UploadChunkTiming>,
 }
 
 struct PendingUpload {
@@ -1720,6 +1730,7 @@ fn upload_progress(upload: &PendingUpload) -> UploadProgressResponse {
         chunk_size: UPLOAD_CHUNK_BYTES,
         chunk_hashes: upload.chunk_hashes.clone(),
         completed_receipt: None,
+        timing: None,
     }
 }
 
@@ -1986,21 +1997,33 @@ async fn upload_chunk(
     drop(file);
     let write_elapsed = write_started.elapsed();
 
+    let whole_hash_update_started = Instant::now();
     upload.hasher.update(&body);
+    let whole_hash_update_elapsed = whole_hash_update_started.elapsed();
     upload.chunk_hashes.push(actual_hash);
     upload.received_size += body.len() as u64;
     upload.next_chunk += 1;
     upload.last_activity = Instant::now();
     release_reserved_upload_bytes(&state, body.len() as u64);
+    let server_total_elapsed = chunk_started.elapsed();
+    let timing = UploadChunkTiming {
+        chunk_hash_ms: hash_elapsed.as_secs_f64() * 1000.0,
+        whole_file_hash_update_ms: whole_hash_update_elapsed.as_secs_f64() * 1000.0,
+        open_seek_write_ms: write_elapsed.as_secs_f64() * 1000.0,
+        server_total_ms: server_total_elapsed.as_secs_f64() * 1000.0,
+    };
     eprintln!(
-        "AetherDrop PERF upload.chunk index={} bytes={} hash_ms={:.2} open_seek_write_ms={:.2} server_total_ms={:.2}",
+        "AetherDrop PERF upload.chunk index={} bytes={} chunk_hash_ms={:.2} whole_hash_update_ms={:.2} open_seek_write_ms={:.2} server_total_ms={:.2}",
         chunk_index,
         body.len(),
-        hash_elapsed.as_secs_f64() * 1000.0,
-        write_elapsed.as_secs_f64() * 1000.0,
-        chunk_started.elapsed().as_secs_f64() * 1000.0,
+        timing.chunk_hash_ms,
+        timing.whole_file_hash_update_ms,
+        timing.open_seek_write_ms,
+        timing.server_total_ms,
     );
-    Ok(Json(upload_progress(&upload)))
+    let mut progress = upload_progress(&upload);
+    progress.timing = Some(timing);
+    Ok(Json(progress))
 }
 
 async fn finish_chunked_upload(
