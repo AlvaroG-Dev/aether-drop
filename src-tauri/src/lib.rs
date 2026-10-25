@@ -258,18 +258,11 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
             ));
         }
     };
-    let url = format!("http://{}:8080", host);
-
-    let code = QrCode::new(url.as_bytes()).map_err(|e| e.to_string())?;
-    let image = code.render::<image::Luma<u8>>().min_dimensions(200, 200).build();
-    
-    let mut buffer = Cursor::new(Vec::new());
-    image.write_to(&mut buffer, image::ImageFormat::Png).map_err(|e| e.to_string())?;
-    let base64_img = general_purpose::STANDARD.encode(buffer.get_ref());
-
     let dir = state.save_dir.read().await;
     let webtransport_info = state.webtransport_info.read().await.clone();
     let webtransport_error = state.webtransport_error.read().await.clone();
+    // The only QR exposed to the desktop UI is the HTTPS-hosted WebTransport
+    // client with the current certificate pin. Never encode the legacy HTTP URL.
     let (webtransport_probe_url, webtransport_probe_qr_base64) =
         if let Some(info) = webtransport_info.as_ref() {
             let probe_url = format!(
@@ -277,7 +270,7 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
                 info.host, info.certificate_hash
             );
             let code = QrCode::new(probe_url.as_bytes()).map_err(|error| error.to_string())?;
-            let image = code.render::<image::Luma<u8>>().min_dimensions(180, 180).build();
+            let image = code.render::<image::Luma<u8>>().min_dimensions(200, 200).build();
             let mut buffer = Cursor::new(Vec::new());
             image.write_to(&mut buffer, image::ImageFormat::Png).map_err(|error| error.to_string())?;
             (
@@ -287,6 +280,9 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
         } else {
             (None, None)
         };
+    let url = webtransport_probe_url.clone()
+        .unwrap_or_else(|| "Canal seguro no disponible".to_owned());
+    let base64_img = webtransport_probe_qr_base64.clone().unwrap_or_default();
 
     Ok(ConnectionInfo {
         url,
