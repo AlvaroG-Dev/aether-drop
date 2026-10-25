@@ -1843,6 +1843,7 @@ async fn chunked_upload_status(
                     chunk_size: UPLOAD_CHUNK_BYTES,
                     chunk_hashes: Vec::new(),
                     completed_receipt: Some(record.receipt.clone()),
+                    timing: None,
                 }));
             }
             return Err((StatusCode::FORBIDDEN, "La transferencia pertenece a otra sesión."));
