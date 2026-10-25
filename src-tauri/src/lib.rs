@@ -1877,6 +1877,7 @@ async fn upload_chunk(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<UploadProgressResponse>, (StatusCode, &'static str)> {
+    let chunk_started = Instant::now();
     let handle = state.pending_uploads.read().await.get(&transfer_id).cloned()
         .ok_or((StatusCode::NOT_FOUND, "La transferencia pendiente no existe o ha caducado."))?;
     if handle.owner_device_id != session.device_id || handle.session_token != session.token {
@@ -1937,12 +1938,15 @@ async fn upload_chunk(
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .map(str::to_ascii_lowercase)
         .ok_or((StatusCode::BAD_REQUEST, "Falta el hash SHA-256 válido del bloque."))?;
+    let hash_started = Instant::now();
     let actual_hash = format!("{:x}", Sha256::digest(&body));
+    let hash_elapsed = hash_started.elapsed();
     if actual_hash != provided_hash {
         return Err((StatusCode::BAD_REQUEST, "El bloque no supera la verificación SHA-256; vuelve a enviarlo."));
     }
 
     let offset = upload.received_size;
+    let write_started = Instant::now();
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .open(&upload.temp_path)
@@ -1980,6 +1984,7 @@ async fn upload_chunk(
         return Err(error);
     }
     drop(file);
+    let write_elapsed = write_started.elapsed();
 
     upload.hasher.update(&body);
     upload.chunk_hashes.push(actual_hash);
@@ -1987,6 +1992,14 @@ async fn upload_chunk(
     upload.next_chunk += 1;
     upload.last_activity = Instant::now();
     release_reserved_upload_bytes(&state, body.len() as u64);
+    eprintln!(
+        "AetherDrop PERF upload.chunk index={} bytes={} hash_ms={:.2} open_seek_write_ms={:.2} server_total_ms={:.2}",
+        chunk_index,
+        body.len(),
+        hash_elapsed.as_secs_f64() * 1000.0,
+        write_elapsed.as_secs_f64() * 1000.0,
+        chunk_started.elapsed().as_secs_f64() * 1000.0,
+    );
     Ok(Json(upload_progress(&upload)))
 }
 
