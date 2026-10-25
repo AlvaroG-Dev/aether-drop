@@ -44,6 +44,10 @@
     <input id="uploadFile" type="file">
     <button id="uploadButton" type="button">Enviar al PC</button>
     <p id="transferStatus" class="muted" role="status" aria-live="polite"></p>
+    <details id="transferDiagnostics" class="muted">
+      <summary>Diagnóstico de transferencia</summary>
+      <pre id="transferMetrics" style="white-space:pre-wrap;overflow-wrap:anywhere">Aún no hay mediciones.</pre>
+    </details>
     <h2>Portapapeles</h2>
     <label for="clipboardText">Texto sincronizado con el PC (máximo 1 MiB)</label>
     <textarea id="clipboardText" rows="5" style="box-sizing:border-box;width:100%;border:1px solid #35435e;border-radius:10px;padding:12px;background:#0b1222;color:#fff;font:inherit"></textarea>
@@ -67,6 +71,7 @@
   const uploadInput = document.querySelector('#uploadFile');
   const uploadButton = document.querySelector('#uploadButton');
   const transferStatus = document.querySelector('#transferStatus');
+  const transferMetrics = document.querySelector('#transferMetrics');
   const clipboardText = document.querySelector('#clipboardText');
   const clipboardGet = document.querySelector('#clipboardGet');
   const clipboardSet = document.querySelector('#clipboardSet');
@@ -138,19 +143,29 @@
       }
       transferId = start.transfer_id;
       const wholeHash = window.sha256.create();
+      const transferStartedAt = performance.now();
+      const metrics = { readMs: 0, wholeHashMs: 0, chunkHashMs: 0, requestMs: 0, chunks: 0 };
+      transferMetrics.textContent = 'Midiendo lectura, hash y espera de red por bloques…';
       if (!globalThis.crypto?.subtle) {
         throw new Error('Este navegador no dispone de SHA-256 acelerado para transferencias seguras.');
       }
       let offset = 0;
       let chunkIndex = 0;
       while (offset < file.size) {
+        const readStartedAt = performance.now();
         const buffer = await file.slice(offset, Math.min(file.size, offset + start.chunk_size)).arrayBuffer();
+        metrics.readMs += performance.now() - readStartedAt;
         const bytes = new Uint8Array(buffer);
+        const wholeHashStartedAt = performance.now();
         wholeHash.update(bytes);
+        metrics.wholeHashMs += performance.now() - wholeHashStartedAt;
         // Native Web Crypto hashes each chunk without the cost of the pure-JS implementation.
         // The incremental whole-file hash remains streaming and does not load the whole file into RAM.
+        const chunkHashStartedAt = performance.now();
         const chunkDigest = await crypto.subtle.digest('SHA-256', bytes);
         const chunkHash = Array.from(new Uint8Array(chunkDigest), byte => byte.toString(16).padStart(2, '0')).join('');
+        metrics.chunkHashMs += performance.now() - chunkHashStartedAt;
+        const requestStartedAt = performance.now();
         try {
           await client.request('upload.chunk', {
             transfer_id: transferId,
@@ -183,10 +198,26 @@
           } else {
             throw new Error('El estado de la subida no coincide con el bloque enviado; se cancela para evitar corrupción.');
           }
+        } finally {
+          metrics.requestMs += performance.now() - requestStartedAt;
         }
         offset += bytes.length;
         chunkIndex += 1;
-        transferStatus.textContent = 'Enviando… ' + Math.floor(offset * 100 / file.size) + '%';
+        metrics.chunks = chunkIndex;
+        const elapsedSeconds = Math.max(0.001, (performance.now() - transferStartedAt) / 1000);
+        const averageMBps = offset / elapsedSeconds / 1_000_000;
+        transferStatus.textContent = 'Enviando… ' + Math.floor(offset * 100 / file.size) + '% · ' +
+          averageMBps.toFixed(1) + ' MB/s';
+        transferMetrics.textContent =
+          'Archivo: ' + file.name + '\n' +
+          'Progreso: ' + offset.toLocaleString() + ' / ' + file.size.toLocaleString() + ' bytes\n' +
+          'Velocidad media: ' + averageMBps.toFixed(2) + ' MB/s\n' +
+          'Tiempo transcurrido: ' + elapsedSeconds.toFixed(2) + ' s\n' +
+          'Bloques: ' + metrics.chunks + '\n' +
+          'Lectura de archivo: ' + metrics.readMs.toFixed(1) + ' ms\n' +
+          'Hash incremental del archivo: ' + metrics.wholeHashMs.toFixed(1) + ' ms\n' +
+          'SHA-256 por bloque: ' + metrics.chunkHashMs.toFixed(1) + ' ms\n' +
+          'Esperando respuesta del PC (incluye red y procesamiento del servidor): ' + metrics.requestMs.toFixed(1) + ' ms';
       }
       transferStatus.textContent = 'Verificando el archivo completo…';
       const expectedWholeHash = wholeHash.hex();
@@ -212,7 +243,12 @@
         finished = receipt;
       }
       transferId = null;
-      transferStatus.textContent = 'Archivo recibido y verificado: ' + file.name;
+      const totalSeconds = Math.max(0.001, (performance.now() - transferStartedAt) / 1000);
+      const finalMBps = file.size / totalSeconds / 1_000_000;
+      transferStatus.textContent = 'Archivo recibido y verificado: ' + file.name + ' · ' + finalMBps.toFixed(2) + ' MB/s';
+      transferMetrics.textContent += '\n\nRESULTADO FINAL\nTiempo total (incluye verificación final): ' + totalSeconds.toFixed(2) + ' s\n' +
+        'Velocidad efectiva total: ' + finalMBps.toFixed(2) + ' MB/s\n' +
+        'Tiempo en upload.finish/verificación final: ' + Math.max(0, performance.now() - transferStartedAt - metrics.readMs - metrics.wholeHashMs - metrics.chunkHashMs - metrics.requestMs).toFixed(1) + ' ms';
       uploadInput.value = '';
       await refreshFiles();
     } catch (error) {
