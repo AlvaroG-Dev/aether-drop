@@ -330,14 +330,25 @@ pub async fn run(
                             let _ = response_stream.finish().await;
                             continue;
                         }
+                        let body_read_elapsed = body_read_started.elapsed();
                         if request_header.op == "upload.chunk" {
                             eprintln!(
                                 "AetherDrop PERF upload.receive bytes={} body_read_ms={:.2}",
                                 request_header.payload_bytes.unwrap_or(0),
-                                body_read_started.elapsed().as_secs_f64() * 1000.0,
+                                body_read_elapsed.as_secs_f64() * 1000.0,
                             );
                         }
-                        let result = dispatch_request(&state, &request_header, request_body, upload_request_permit, download_request_permit.clone()).await;
+                        let mut result = dispatch_request(&state, &request_header, request_body, upload_request_permit, download_request_permit.clone()).await;
+                        if request_header.op == "upload.chunk" {
+                            if let Ok((value, _)) = &mut result {
+                                if let Some(timing) = value.get_mut("timing").and_then(serde_json::Value::as_object_mut) {
+                                    timing.insert(
+                                        "body_read_ms".to_owned(),
+                                        serde_json::json!(body_read_elapsed.as_secs_f64() * 1000.0),
+                                    );
+                                }
+                            }
+                        }
                         let (response, response_body) = match result {
                             Ok((value, body)) => (ResponseHeader {
                                 version: super::webtransport_protocol::PROTOCOL_VERSION,
