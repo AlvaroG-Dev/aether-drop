@@ -107,11 +107,24 @@ pub async fn run(
                 tokio::spawn(async move {
                     let request = match timeout(Duration::from_secs(5), incoming).await {
                         Ok(Ok(request)) => request,
-                        _ => return,
+                        Ok(Err(error)) => {
+                            eprintln!("AetherDrop WebTransport: fallo al abrir el handshake HTTP/3: {error:?}");
+                            return;
+                        }
+                        Err(_) => {
+                            eprintln!("AetherDrop WebTransport: timeout esperando el handshake HTTP/3 (UDP/{PORT}); revisa el firewall y la conectividad LAN.");
+                            return;
+                        }
                     };
                     if request.origin() != Some(ALLOWED_ORIGIN)
                         || request.path() != "/aetherdrop-wt-probe-v1"
                     {
+                        eprintln!(
+                            "AetherDrop WebTransport: solicitud rechazada por Origin/path (origin={:?}, path={:?}, esperado_origin={:?}).",
+                            request.origin(),
+                            request.path(),
+                            ALLOWED_ORIGIN
+                        );
                         let _ = request.forbidden().await;
                         return;
                     }
