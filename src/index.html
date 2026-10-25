@@ -146,18 +146,11 @@
       <article class="panel connect-panel">
         <div class="panel-heading"><h2>Conecta tu móvil</h2><span class="tiny-label">Paso 1 de 2</span></div>
         <div class="qr-row">
-          <div class="qr-frame"><img id="qrImage" alt="Código QR para conectar con AetherDrop" /><div id="qrPlaceholder" class="qr-placeholder">Preparando<br>código QR…</div></div>
+          <div class="qr-frame"><img id="qrImage" alt="Código QR de conexión segura de AetherDrop" /><div id="qrPlaceholder" class="qr-placeholder">Preparando<br>código QR seguro…</div></div>
           <div class="qr-copy">
-            <div class="field-label">Dirección local</div>
-            <div class="url-line" id="serverUrl">Buscando tu red…</div>
-            <p class="helper">Modo HTTP heredado: usa el segundo QR «Cliente WebTransport seguro» para transferencias cifradas.</p>
-          </div>
-        </div>
-        <div id="webtransportPanel" style="display:flex;gap:14px;align-items:center;border-top:1px solid #27303d;margin-top:16px;padding-top:16px">
-          <img id="webtransportQr" alt="Código QR para cliente WebTransport seguro" hidden style="width:96px;height:96px;object-fit:contain;background:#fff;border-radius:8px;padding:4px">
-          <div style="min-width:0">
-            <div class="field-label">Cliente WebTransport seguro (experimental)</div>
-            <div id="webtransportStatus" class="helper">Preparando canal WebTransport…</div>
+            <div class="field-label">Acceso seguro</div>
+            <div class="url-line" id="serverUrl">Preparando canal seguro…</div>
+            <p id="webtransportStatus" class="helper">Este QR solo abre el cliente HTTPS y lleva la huella del certificado actual. Si el canal seguro no está disponible, no se ofrece conexión HTTP alternativa.</p>
             <a id="webtransportProbeLink" href="#" target="_blank" rel="noopener noreferrer" style="display:none;overflow-wrap:anywhere">Abrir cliente seguro</a>
           </div>
         </div>
