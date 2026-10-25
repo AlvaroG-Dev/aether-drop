@@ -2,7 +2,7 @@
 //! authenticated metadata operations, bounded file transfer, and clipboard access.
 //! Automated tests cover dispatch primitives; real browser/device end-to-end validation remains pending.
 
-use std::{collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}};
+use std::{collections::HashMap, net::{IpAddr, Ipv4Addr, SocketAddr}, sync::Arc, time::{Duration, Instant}};
 use super::{AppState, AuthorizedSession, ClipboardRequest, DownloadTicket, SessionRecord, UploadFinishRequest, UploadRequestPermit, UploadStartRequest, MAX_CLIPBOARD_BYTES, UPLOAD_CHUNK_BYTES};
 use axum::{extract::{Extension, Path as AxumPath, State}, http::{HeaderMap, HeaderValue, StatusCode}, Json};
 use bytes::Bytes;
@@ -76,7 +76,14 @@ pub async fn run(
         return;
     };
     let certificate_hash = certificate.hash().fmt(Sha256DigestFmt::DottedHex).replace(':', "");
-    let config = ServerConfig::builder().with_bind_default(PORT).with_identity(identity).build();
+    // The QR advertises an IPv4 LAN address and the browser client rejects non-IPv4 hosts.
+    // Bind an explicit IPv4 wildcard socket instead of relying on platform-specific
+    // IPv6 dual-stack behavior for incoming QUIC/UDP traffic.
+    let bind_address = SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT));
+    let config = ServerConfig::builder()
+        .with_bind_address(bind_address)
+        .with_identity(identity)
+        .build();
     let endpoint = match Endpoint::server(config) {
         Ok(endpoint) => endpoint,
         Err(error) => {
