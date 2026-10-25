@@ -245,19 +245,6 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
     }).await
         .map_err(|_| "El servidor local sigue iniciándose. Vuelve a intentarlo.".to_owned())??;
 
-    let my_ip = local_ip().map_err(|error| format!("No se pudo detectar una dirección de red: {}", error))?;
-    if my_ip.is_loopback() || my_ip.is_unspecified() {
-        return Err("No se ha detectado una dirección de red LAN válida. Conecta el ordenador a la red y vuelve a intentarlo.".to_owned());
-    }
-    let host = match my_ip {
-        IpAddr::V4(address) => address.to_string(),
-        IpAddr::V6(address) => {
-            return Err(format!(
-                "La dirección local detectada es IPv6 ({}), pero el servidor de este prototipo está enlazado a IPv4. Conecta el ordenador a una red con IPv4 para vincular el móvil.",
-                address
-            ));
-        }
-    };
     let dir = state.save_dir.read().await;
     let webtransport_info = state.webtransport_info.read().await.clone();
     let webtransport_error = state.webtransport_error.read().await.clone();
