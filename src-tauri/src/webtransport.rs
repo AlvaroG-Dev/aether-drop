@@ -80,9 +80,18 @@ pub async fn run(
     // Bind an explicit IPv4 wildcard socket instead of relying on platform-specific
     // IPv6 dual-stack behavior for incoming QUIC/UDP traffic.
     let bind_address = SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT));
+    // The default OS UDP receive buffer (64 KiB on Windows) overflows under the bursts of a
+    // fast Wi-Fi sender, which causes packet loss and makes QUIC back off to a crawl.
+    let socket = match bind_udp_socket(bind_address) {
+        Ok(socket) => socket,
+        Err(error) => {
+            let _ = ready.send(Err(format!("No se pudo abrir WebTransport en UDP/{PORT}: {error}")));
+            return;
+        }
+    };
     let mut builder = ServerConfig::builder()
-        .with_bind_address(bind_address)
-        .with_identity(identity);
+        .with_bind_socket(socket)
+        .with_custom_transport(identity, upload_transport_config());
     builder = builder.keep_alive_interval(Some(Duration::from_secs(3)));
     let config = match builder.max_idle_timeout(Some(Duration::from_secs(300))) {
         Ok(b) => b.build(),
@@ -282,126 +291,132 @@ pub async fn run(
                                 _ => return,
                             }
                         };
-                        let (mut response_stream, mut request_stream) = streams;
-                        let request_header = match timeout(Duration::from_secs(20), read_request_header(&mut request_stream)).await {
-                            Ok(Ok(header)) => header,
-                            _ => {
-                                let _ = response_stream.finish().await;
-                                continue;
-                            }
-                        };
-                        // Acquire before reading an 8 MiB upload body so concurrent
-                        // streams cannot bypass the HTTP path's memory bound.
-                        let upload_request_permit = if request_header.op == "upload.chunk" {
-                            state.upload_slots.clone().try_acquire_owned().ok()
-                                .map(|permit| UploadRequestPermit { _permit: Arc::new(permit) })
-                        } else {
-                            None
-                        };
-                        let download_request_permit = if request_header.op == "download.read" {
-                            state.download_slots.clone().try_acquire_owned().ok().map(Arc::new)
-                        } else {
-                            None
-                        };
-                        let body_read_started = Instant::now();
-                        let mut request_body_fully_read = request_header.payload_bytes.is_none();
-                        let request_body = if let Some(length) = request_header.payload_bytes {
-                            let cap = if request_header.op == "clipboard.set" { super::MAX_CLIPBOARD_BYTES as u64 } else { UPLOAD_CHUNK_BYTES as u64 };
-                            if length > cap || (request_header.op == "upload.chunk" && upload_request_permit.is_none()) {
-                                // Do not allocate or drain an oversized/unadmitted body.
-                                // Dispatch below returns a bounded protocol error.
-                                None
+                        // Serve each stream in its own task. Handling streams inline made the
+                        // connection strictly stop-and-wait: the next upload body was not even
+                        // read until the previous chunk had been hashed, written and answered.
+                        let state = state.clone();
+                        tokio::spawn(async move {
+                            let (mut response_stream, mut request_stream) = streams;
+                            let request_header = match timeout(Duration::from_secs(20), read_request_header(&mut request_stream)).await {
+                                Ok(Ok(header)) => header,
+                                _ => {
+                                    let _ = response_stream.finish().await;
+                                    return;
+                                }
+                            };
+                            // Acquire before reading an 8 MiB upload body so concurrent
+                            // streams cannot bypass the HTTP path's memory bound.
+                            let upload_request_permit = if request_header.op == "upload.chunk" {
+                                state.upload_slots.clone().try_acquire_owned().ok()
+                                    .map(|permit| UploadRequestPermit { _permit: Arc::new(permit) })
                             } else {
-                                match timeout(Duration::from_secs(120), read_stream_payload(&mut request_stream, length, cap)).await {
-                                    Ok(Ok(body)) => {
-                                        request_body_fully_read = true;
-                                        Some(body)
+                                None
+                            };
+                            let download_request_permit = if request_header.op == "download.read" {
+                                state.download_slots.clone().try_acquire_owned().ok().map(Arc::new)
+                            } else {
+                                None
+                            };
+                            let body_read_started = Instant::now();
+                            let mut request_body_fully_read = request_header.payload_bytes.is_none();
+                            let request_body = if let Some(length) = request_header.payload_bytes {
+                                let cap = if request_header.op == "clipboard.set" { super::MAX_CLIPBOARD_BYTES as u64 } else { UPLOAD_CHUNK_BYTES as u64 };
+                                if length > cap || (request_header.op == "upload.chunk" && upload_request_permit.is_none()) {
+                                    // Do not allocate or drain an oversized/unadmitted body.
+                                    // Dispatch below returns a bounded protocol error.
+                                    None
+                                } else {
+                                    match timeout(Duration::from_secs(120), read_stream_payload(&mut request_stream, length, cap)).await {
+                                        Ok(Ok(body)) => {
+                                            request_body_fully_read = true;
+                                            Some(body)
+                                        }
+                                        _ => {
+                                            let _ = response_stream.finish().await;
+                                            return;
+                                        }
                                     }
-                                    _ => {
-                                        let _ = response_stream.finish().await;
-                                        continue;
+                                }
+                            } else {
+                                None
+                            };
+                            // One operation per stream: require the peer to finish the
+                            // request stream and reject bytes beyond the declared payload.
+                            // If we deliberately skipped a body for a rejected request,
+                            // leave it unread and return the dispatcher's bounded error.
+                            if request_body_fully_read && !matches!(
+                                timeout(Duration::from_secs(5), ensure_stream_eof(&mut request_stream)).await,
+                                Ok(Ok(()))
+                            ) {
+                                let _ = response_stream.finish().await;
+                                return;
+                            }
+                            let body_read_elapsed = body_read_started.elapsed();
+                            if request_header.op == "upload.chunk" {
+                                eprintln!(
+                                    "AetherDrop PERF upload.receive bytes={} body_read_ms={:.2}",
+                                    request_header.payload_bytes.unwrap_or(0),
+                                    body_read_elapsed.as_secs_f64() * 1000.0,
+                                );
+                            }
+                            let mut result = dispatch_request(&state, &request_header, request_body, upload_request_permit, download_request_permit.clone()).await;
+                            if request_header.op == "upload.chunk" {
+                                if let Ok((value, _)) = &mut result {
+                                    if let Some(timing) = value.get_mut("timing").and_then(serde_json::Value::as_object_mut) {
+                                        timing.insert(
+                                            "body_read_ms".to_owned(),
+                                            serde_json::json!(body_read_elapsed.as_secs_f64() * 1000.0),
+                                        );
                                     }
                                 }
                             }
-                        } else {
-                            None
-                        };
-                        // One operation per stream: require the peer to finish the
-                        // request stream and reject bytes beyond the declared payload.
-                        // If we deliberately skipped a body for a rejected request,
-                        // leave it unread and return the dispatcher's bounded error.
-                        if request_body_fully_read && !matches!(
-                            timeout(Duration::from_secs(5), ensure_stream_eof(&mut request_stream)).await,
-                            Ok(Ok(()))
-                        ) {
-                            let _ = response_stream.finish().await;
-                            continue;
-                        }
-                        let body_read_elapsed = body_read_started.elapsed();
-                        if request_header.op == "upload.chunk" {
-                            eprintln!(
-                                "AetherDrop PERF upload.receive bytes={} body_read_ms={:.2}",
-                                request_header.payload_bytes.unwrap_or(0),
-                                body_read_elapsed.as_secs_f64() * 1000.0,
-                            );
-                        }
-                        let mut result = dispatch_request(&state, &request_header, request_body, upload_request_permit, download_request_permit.clone()).await;
-                        if request_header.op == "upload.chunk" {
-                            if let Ok((value, _)) = &mut result {
-                                if let Some(timing) = value.get_mut("timing").and_then(serde_json::Value::as_object_mut) {
-                                    timing.insert(
-                                        "body_read_ms".to_owned(),
-                                        serde_json::json!(body_read_elapsed.as_secs_f64() * 1000.0),
-                                    );
-                                }
-                            }
-                        }
-                        let (response, response_body) = match result {
-                            Ok((value, body)) => (ResponseHeader {
-                                version: super::webtransport_protocol::PROTOCOL_VERSION,
-                                request_id: request_header.request_id.clone(),
-                                ok: true,
-                                error: None,
-                                payload_bytes: body.as_ref().map(|bytes| bytes.len() as u64),
-                                result: Some(value),
-                            }, body),
-                            Err(code) => (ResponseHeader {
-                                version: super::webtransport_protocol::PROTOCOL_VERSION,
-                                request_id: request_header.request_id.clone(),
-                                ok: false,
-                                error: Some(code.to_owned()),
-                                payload_bytes: None,
-                                result: None,
-                            }, None),
-                        };
-                        let (frame, body_to_send) = match super::webtransport_protocol::encode_header(&response) {
-                            Ok(frame) => (Some(frame), response_body),
-                            Err(_) => (
-                                super::webtransport_protocol::encode_header(&ResponseHeader {
+                            let (response, response_body) = match result {
+                                Ok((value, body)) => (ResponseHeader {
+                                    version: super::webtransport_protocol::PROTOCOL_VERSION,
+                                    request_id: request_header.request_id.clone(),
+                                    ok: true,
+                                    error: None,
+                                    payload_bytes: body.as_ref().map(|bytes| bytes.len() as u64),
+                                    result: Some(value),
+                                }, body),
+                                Err(code) => (ResponseHeader {
                                     version: super::webtransport_protocol::PROTOCOL_VERSION,
                                     request_id: request_header.request_id.clone(),
                                     ok: false,
-                                    error: Some("response_too_large".to_owned()),
+                                    error: Some(code.to_owned()),
                                     payload_bytes: None,
                                     result: None,
-                                }).ok(),
-                                None,
-                            ),
-                        };
-                        let write_result = timeout(Duration::from_secs(30), async {
-                            if let Some(frame) = frame {
-                                response_stream.write_all(&frame).await?;
-                                if let Some(body) = body_to_send {
-                                    response_stream.write_all(&body).await?;
+                                }, None),
+                            };
+                            let (frame, body_to_send) = match super::webtransport_protocol::encode_header(&response) {
+                                Ok(frame) => (Some(frame), response_body),
+                                Err(_) => (
+                                    super::webtransport_protocol::encode_header(&ResponseHeader {
+                                        version: super::webtransport_protocol::PROTOCOL_VERSION,
+                                        request_id: request_header.request_id.clone(),
+                                        ok: false,
+                                        error: Some("response_too_large".to_owned()),
+                                        payload_bytes: None,
+                                        result: None,
+                                    }).ok(),
+                                    None,
+                                ),
+                            };
+                            let write_result = timeout(Duration::from_secs(30), async {
+                                if let Some(frame) = frame {
+                                    response_stream.write_all(&frame).await?;
+                                    if let Some(body) = body_to_send {
+                                        response_stream.write_all(&body).await?;
+                                    }
                                 }
+                                response_stream.finish().await
+                            }).await;
+                            if !matches!(write_result, Ok(Ok(()))) {
+                                // A peer that stops reading must not pin this connection
+                                // task or its transfer semaphore permits indefinitely.
+                                return;
                             }
-                            response_stream.finish().await
-                        }).await;
-                        if !matches!(write_result, Ok(Ok(()))) {
-                            // A peer that stops reading must not pin this connection
-                            // task or its transfer semaphore permits indefinitely.
-                            return;
-                        }
+                        });
                     }
                 });
             }
@@ -881,4 +896,37 @@ mod tests {
         tokio::fs::remove_file(path).await.unwrap();
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
+}
+
+
+/// Size requested for the UDP socket send/receive buffers (the OS may clamp it).
+const UDP_SOCKET_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+fn bind_udp_socket(address: SocketAddr) -> std::io::Result<std::net::UdpSocket> {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+    // Best effort: a smaller buffer still works, it is just slower.
+    let _ = socket.set_recv_buffer_size(UDP_SOCKET_BUFFER_BYTES);
+    let _ = socket.set_send_buffer_size(UDP_SOCKET_BUFFER_BYTES);
+    socket.bind(&address.into())?;
+    eprintln!(
+        "AetherDrop PERF udp.socket recv_buffer={} send_buffer={}",
+        socket.recv_buffer_size().unwrap_or(0),
+        socket.send_buffer_size().unwrap_or(0),
+    );
+    Ok(socket.into())
+}
+
+/// QUIC flow-control windows sized for 8 MiB upload chunks (quinn defaults to ~1.25 MiB per
+/// stream). Set `AETHERDROP_CC=bbr` to try the BBR congestion controller, which tolerates the
+/// random loss of Wi-Fi better than the default CUBIC.
+fn upload_transport_config() -> wtransport::config::QuicTransportConfig {
+    use wtransport::quinn::{congestion::BbrConfig, VarInt};
+    let mut transport = wtransport::config::QuicTransportConfig::default();
+    transport.stream_receive_window(VarInt::from_u32(16 * 1024 * 1024));
+    transport.receive_window(VarInt::from_u32(64 * 1024 * 1024));
+    transport.send_window(32 * 1024 * 1024);
+    if std::env::var("AETHERDROP_CC").is_ok_and(|value| value.eq_ignore_ascii_case("bbr")) {
+        transport.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    }
+    transport
 }

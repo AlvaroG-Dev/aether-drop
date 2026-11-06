@@ -38,6 +38,10 @@ const MAX_PENDING_UPLOADS: usize = 24;
 const MAX_PENDING_UPLOADS_PER_DEVICE: usize = 4;
 const UPLOAD_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const UPLOAD_CHUNK_U64: u64 = UPLOAD_CHUNK_BYTES as u64;
+/// How many chunks ahead of the next expected one a client may pipeline.
+const UPLOAD_PIPELINE_WINDOW: u64 = 2;
+/// How long an early (pipelined) chunk waits for its predecessors before it gets a conflict.
+const UPLOAD_TURN_WAIT: Duration = Duration::from_secs(60);
 const PENDING_UPLOAD_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 const MAX_SHARED_FILES: usize = 256;
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
@@ -1716,6 +1720,64 @@ mod upload_filename_tests {
     }
 
     #[tokio::test]
+    async fn pipelined_chunk_arriving_early_waits_for_its_predecessor() {
+        let directory = test_directory().await;
+        let (state, session) = test_state(directory.clone());
+        let mut data = vec![0u8; (UPLOAD_CHUNK_U64 as usize) + 4096];
+        for (index, byte) in data.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        let full_hash = format!("{:x}", Sha256::digest(&data));
+        let Json(start) = start_chunked_upload(
+            State(state.clone()),
+            Extension(session.clone()),
+            Json(UploadStartRequest { filename: "pipelined.bin".to_owned(), size_bytes: data.len() as u64 }),
+        )
+        .await
+        .unwrap();
+        let send = |index: u64| {
+            let state = state.clone();
+            let session = session.clone();
+            let transfer_id = start.transfer_id.clone();
+            let from = index as usize * (UPLOAD_CHUNK_U64 as usize);
+            let chunk = Bytes::copy_from_slice(&data[from..(from + (UPLOAD_CHUNK_U64 as usize)).min(data.len())]);
+            async move {
+                let mut headers = HeaderMap::new();
+                headers.insert("x-chunk-sha256", HeaderValue::from_str(&format!("{:x}", Sha256::digest(&chunk))).unwrap());
+                let permit = state.upload_slots.clone().acquire_owned().await.unwrap();
+                upload_chunk(
+                    State(state),
+                    Extension(session),
+                    Extension(super::UploadRequestPermit { _permit: Arc::new(permit) }),
+                    AxumPath((transfer_id, index)),
+                    headers,
+                    chunk,
+                )
+                .await
+                .map(|Json(progress)| progress.next_chunk)
+            }
+        };
+        // Chunk 1 is polled first, so it reaches the server before chunk 0 and must wait.
+        let (second, first) = tokio::join!(send(1), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            send(0).await
+        });
+        assert_eq!(first.unwrap(), 1);
+        assert_eq!(second.unwrap(), 2);
+        let Json(finished) = finish_chunked_upload(
+            State(state.clone()),
+            Extension(session),
+            AxumPath(start.transfer_id),
+            Json(UploadFinishRequest { sha256: full_hash.clone() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(finished.files[0].sha256, full_hash);
+        assert_eq!(tokio::fs::read(directory.join("pipelined.bin")).await.unwrap(), data);
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn wrong_original_file_hash_never_publishes_the_destination() {
         let directory = test_directory().await;
         let (state, session) = test_state(directory.clone());
@@ -2292,24 +2354,39 @@ async fn upload_chunk(
     let transfer_cancellation = handle.cancellation.clone();
     let session_cancellation = session.cancellation.clone();
     let upload_inner = handle.inner.clone();
-    let mut upload = tokio::select! {
-        biased;
-        _ = shutdown_cancellation.cancelled() => {
-            drop(handle);
-            remove_pending_upload(&state, &transfer_id).await;
-            return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+    // Clients may pipeline a few chunks: the body of chunk N+1 is received while chunk N is
+    // still being hashed/written. Chunks are still committed strictly in order, so a chunk
+    // that arrives slightly early waits (bounded) for its predecessors instead of failing.
+    let turn_deadline = Instant::now() + UPLOAD_TURN_WAIT;
+    let mut upload = loop {
+        let guard = tokio::select! {
+            biased;
+            _ = shutdown_cancellation.cancelled() => {
+                drop(handle);
+                remove_pending_upload(&state, &transfer_id).await;
+                return Err((StatusCode::SERVICE_UNAVAILABLE, "AetherDrop se está cerrando."));
+            }
+            _ = transfer_cancellation.cancelled() => {
+                drop(handle);
+                remove_pending_upload(&state, &transfer_id).await;
+                return Err((StatusCode::UNAUTHORIZED, "La transferencia se ha cancelado."));
+            }
+            _ = session_cancellation.cancelled() => {
+                drop(handle);
+                remove_pending_upload(&state, &transfer_id).await;
+                return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado."));
+            }
+            guard = upload_inner.lock() => guard,
+        };
+        if chunk_index > guard.next_chunk
+            && chunk_index - guard.next_chunk <= UPLOAD_PIPELINE_WINDOW
+            && Instant::now() < turn_deadline
+        {
+            drop(guard);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            continue;
         }
-        _ = transfer_cancellation.cancelled() => {
-            drop(handle);
-            remove_pending_upload(&state, &transfer_id).await;
-            return Err((StatusCode::UNAUTHORIZED, "La transferencia se ha cancelado."));
-        }
-        _ = session_cancellation.cancelled() => {
-            drop(handle);
-            remove_pending_upload(&state, &transfer_id).await;
-            return Err((StatusCode::UNAUTHORIZED, "El dispositivo se ha desvinculado."));
-        }
-        guard = upload_inner.lock() => guard,
+        break guard;
     };
     if upload.last_activity.elapsed() >= PENDING_UPLOAD_TTL {
         drop(upload);
@@ -2334,9 +2411,27 @@ async fn upload_chunk(
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .map(str::to_ascii_lowercase)
         .ok_or((StatusCode::BAD_REQUEST, "Falta el hash SHA-256 válido del bloque."))?;
-    let hash_started = Instant::now();
-    let actual_hash = format!("{:x}", Sha256::digest(&body));
-    let hash_elapsed = hash_started.elapsed();
+    // Hash on blocking threads so a multi-megabyte digest never stalls the async runtime
+    // (which also drives the QUIC endpoint), and compute the per-chunk and whole-file digests
+    // concurrently instead of one after the other.
+    let chunk_body = body.clone();
+    let whole_body = body.clone();
+    let mut whole_hasher = upload.hasher.clone();
+    let chunk_task = tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        let digest = format!("{:x}", Sha256::digest(&chunk_body));
+        (digest, started.elapsed())
+    });
+    let whole_task = tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        whole_hasher.update(&whole_body);
+        (whole_hasher, started.elapsed())
+    });
+    let (chunk_result, whole_result) = tokio::join!(chunk_task, whole_task);
+    let (actual_hash, hash_elapsed) = chunk_result
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Falló el cálculo del hash del bloque."))?;
+    let (updated_whole_hasher, whole_hash_update_elapsed) = whole_result
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Falló el cálculo del hash del archivo."))?;
     if actual_hash != provided_hash {
         return Err((StatusCode::BAD_REQUEST, "El bloque no supera la verificación SHA-256; vuelve a enviarlo."));
     }
@@ -2382,9 +2477,7 @@ async fn upload_chunk(
     drop(file);
     let write_elapsed = write_started.elapsed();
 
-    let whole_hash_update_started = Instant::now();
-    upload.hasher.update(&body);
-    let whole_hash_update_elapsed = whole_hash_update_started.elapsed();
+    upload.hasher = updated_whole_hasher;
     upload.chunk_hashes.push(actual_hash);
     upload.received_size += body.len() as u64;
     upload.next_chunk += 1;

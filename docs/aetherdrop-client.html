@@ -661,56 +661,82 @@
       const chunkSize = start.chunk_size;
 
       const wholeHash = window.sha256.create();
-      let offset = 0;
-      let chunkIndex = 0;
       const startTime = performance.now();
       let lastReport = startTime;
-      let lastBytes = 0;
+      let sentBytes = 0;
 
-      while (offset < file.size) {
-        const sliceEnd = Math.min(file.size, offset + chunkSize);
-        const buffer = await file.slice(offset, sliceEnd).arrayBuffer();
-        const bytes = new Uint8Array(buffer);
+      // Hasta MAX_IN_FLIGHT bloques viajan a la vez: mientras el PC verifica y escribe el bloque N,
+      // el bloque N+1 ya se está enviando. Antes cada bloque esperaba a la respuesta del anterior,
+      // así que la red quedaba parada durante el hash/escritura del servidor.
+      // El servidor confirma los bloques siempre en orden; el hash total se calcula aquí en orden.
+      const MAX_IN_FLIGHT = 2;
+      const inFlight = new Set();
+      let failure = null;
 
-        // Actualizar hash incremental
-        wholeHash.update(bytes);
-
-        // Hash del bloque nativo con SubtleCrypto (ultrarrápido sin congelar hilos)
-        const digest = await crypto.subtle.digest('SHA-256', bytes);
-        const chunkHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-
-        // Enviar chunk por WebTransport con reconexión segura
-        await safeRequest('upload.chunk', {
-          transfer_id: transferId,
-          chunk_index: chunkIndex,
-          sha256: chunkHash
-        }, bytes);
-
-        offset += bytes.length;
-        chunkIndex += 1;
-
-        // Medir velocidad y actualizar progreso
+      const reportProgress = (force) => {
         const now = performance.now();
-        const percent = Math.floor((offset / file.size) * 100);
+        const percent = Math.floor((sentBytes / file.size) * 100);
         pPercent.textContent = percent + '%';
         pBar.style.width = percent + '%';
-
-        if (now - lastReport >= 300 || offset === file.size) {
+        if (force || now - lastReport >= 300) {
           const totalSec = Math.max(0.01, (now - startTime) / 1000);
-          const avgMBps = (offset / totalSec) / 1_000_000;
+          const avgMBps = (sentBytes / totalSec) / 1_000_000;
           pSpeed.textContent = avgMBps.toFixed(1) + ' MB/s';
-
-          const remainingBytes = file.size - offset;
-          const remainingSec = avgMBps > 0 ? Math.ceil(remainingBytes / (avgMBps * 1_000_000)) : 0;
+          const remainingSec = avgMBps > 0 ? Math.ceil((file.size - sentBytes) / (avgMBps * 1_000_000)) : 0;
           pEta.textContent = remainingSec > 0 ? `Quedan ~${remainingSec}s` : 'Finalizando…';
           lastReport = now;
         }
+      };
 
-        // Breve pausa para dar respiro al loop del navegador si son archivos enormes
-        if (chunkIndex % 4 === 0) {
-          await new Promise(r => setTimeout(r, 0));
+      const sendChunk = async (index, bytes, chunkHash) => {
+        const t0 = performance.now();
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await safeRequest('upload.chunk', { transfer_id: transferId, chunk_index: index, sha256: chunkHash }, bytes);
+            break;
+          } catch (err) {
+            // El PC limita las operaciones simultáneas: reintenta con una pausa corta.
+            if (String(err?.message || err).includes('too_many_requests') && attempt < 8) {
+              await new Promise(r => setTimeout(r, 50 * attempt));
+              continue;
+            }
+            throw err;
+          }
         }
+        sentBytes += bytes.length;
+        const ms = performance.now() - t0;
+        console.log(`[AetherDrop PERF] chunk=${index} bytes=${bytes.length} roundtrip_ms=${ms.toFixed(0)} (${(bytes.length / 1e6 / (ms / 1000)).toFixed(1)} MB/s por bloque)`);
+        reportProgress(sentBytes === file.size);
+      };
+
+      let offset = 0;
+      let chunkIndex = 0;
+      while (offset < file.size) {
+        if (failure) break;
+        const sliceEnd = Math.min(file.size, offset + chunkSize);
+        const bytes = new Uint8Array(await file.slice(offset, sliceEnd).arrayBuffer());
+
+        // Hash total incremental (en orden) y hash del bloque con SubtleCrypto (nativo).
+        wholeHash.update(bytes);
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const chunkHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+
+        // Espera hueco libre en la ventana antes de lanzar otro bloque.
+        while (inFlight.size >= MAX_IN_FLIGHT && !failure) {
+          await Promise.race(inFlight);
+        }
+        if (failure) break;
+
+        const task = sendChunk(chunkIndex, bytes, chunkHash)
+          .catch(err => { failure = failure || err; })
+          .finally(() => inFlight.delete(task));
+        inFlight.add(task);
+
+        offset += bytes.length;
+        chunkIndex += 1;
       }
+      await Promise.all(inFlight);
+      if (failure) throw failure;
 
       // Finalizar transferencia y verificar integridad
       pEta.textContent = 'Verificando en disco…';
