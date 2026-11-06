@@ -194,10 +194,20 @@ struct PendingUploadHandle {
     inner: Arc<AsyncMutex<PendingUpload>>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReceivedFileInfo {
+    pub id: String,
+    pub filename: String,
+    pub size_bytes: u64,
+    pub received_at: u64,
+    pub path: String,
+}
+
 #[derive(Clone)]
 struct AppState {
     save_dir: Arc<RwLock<PathBuf>>,
     pc_files: Arc<RwLock<Vec<(String, PathBuf)>>>,
+    received_files: Arc<RwLock<Vec<ReceivedFileInfo>>>,
     pin: String,
     trusted_devices: Arc<RwLock<Vec<String>>>,
     clipboard_text: Arc<RwLock<String>>,
@@ -267,7 +277,12 @@ async fn get_connection_info(state: tauri::State<'_, AppState>) -> Result<Connec
                 info.host, info.certificate_hash
             );
             let code = QrCode::new(probe_url.as_bytes()).map_err(|error| error.to_string())?;
-            let image = code.render::<image::Luma<u8>>().min_dimensions(200, 200).build();
+            // Render at high resolution (400×400) with ample quiet zone so the QR
+            // is reliably scannable even at the smaller display sizes used in the UI.
+            let image = code.render::<image::Luma<u8>>()
+                .min_dimensions(400, 400)
+                .quiet_zone(true)
+                .build();
             let mut buffer = Cursor::new(Vec::new());
             image.write_to(&mut buffer, image::ImageFormat::Png).map_err(|error| error.to_string())?;
             (
@@ -364,6 +379,70 @@ async fn get_shared_files(state: tauri::State<'_, AppState>) -> Result<Vec<serde
 }
 
 #[tauri::command]
+async fn get_received_files(state: tauri::State<'_, AppState>) -> Result<Vec<ReceivedFileInfo>, String> {
+    Ok(state.received_files.read().await.clone())
+}
+
+#[tauri::command]
+async fn open_received_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir el explorador: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir Finder: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir el archivo: {e}"))?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+async fn open_save_folder(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let dir = state.save_dir.read().await.clone();
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir la carpeta: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir la carpeta: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir la carpeta: {e}"))?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 async fn get_trusted_devices(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     Ok(state.trusted_devices.read().await.clone())
 }
@@ -424,165 +503,469 @@ async fn serve_mobile_js() -> axum::response::Response {
 }
 
 async fn serve_ui() -> axum::response::Response {
-    let html = r###"
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>AetherDrop - Secure PWA</title>
-            
-            <style>
-              :root{color-scheme:light;--bg:#f6f7fb;--surface:#fff;--ink:#182033;--muted:#778096;--line:#e8ebf2;--accent:#5b61e8;--accent-dark:#474dcc;--green:#17876b;--green-soft:#eaf8f2;--red:#c34b63}
-              *{box-sizing:border-box}
-              body.mobile-app{margin:0;min-height:100vh;padding:24px 16px;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.01em;display:flex;justify-content:center;align-items:center}
-              button,input,textarea{font:inherit}
-              button{cursor:pointer}
-              button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #a5a7ff;outline-offset:2px}
-              .mobile-shell{width:100%;max-width:480px;margin:auto}
-              .mobile-brand{display:flex;align-items:center;gap:11px;margin:0 0 18px 2px}
-              .mobile-mark{width:40px;height:40px;border-radius:13px;background:var(--accent);display:grid;place-items:center;color:white;box-shadow:0 7px 16px #5b61e82b}
-              .mobile-mark svg{width:22px;height:22px}
-              .mobile-brand-name{font-size:19px;font-weight:780;letter-spacing:-.055em}
-              .mobile-brand-sub{font-size:12px;color:var(--muted);margin-top:1px}
-              .mobile-card{background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:22px;box-shadow:0 12px 34px rgba(25,35,66,.06)}
-              .mobile-heading{font-size:20px;letter-spacing:-.045em;font-weight:760;margin:0}
-              .mobile-muted{font-size:12px;color:var(--muted);margin:7px 0 0}
-              .mobile-topline{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:18px}
-              .online-pill{display:inline-flex;align-items:center;gap:7px;border:1px solid #d9f0e7;background:#f0faf6;color:var(--green);border-radius:999px;padding:7px 10px;font-size:10px;font-weight:750;white-space:nowrap}
-              .online-pill:before{content:"";width:6px;height:6px;border-radius:50%;background:#22a77d}
-              .transfer-bridge{position:relative;min-height:154px;overflow:hidden;border:1px solid #e9ebf5;border-radius:17px;background:radial-gradient(ellipse at center,#f0f0ff 0%,#fafaff 52%,#fff 100%);margin:20px 0}
-              .transfer-device{position:absolute;top:44%;width:44px;height:52px;border-radius:13px;display:grid;place-items:center;background:#fff;border:1px solid #e1e5ef;color:#70788c;z-index:2;box-shadow:0 7px 20px #2730520b}
-              .transfer-device svg{width:21px;height:21px;stroke:currentColor}
-              .transfer-device.phone{left:calc(50% - 102px)}.transfer-device.pc{right:calc(50% - 102px)}
-              .transfer-orb{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);width:38px;height:38px;border-radius:14px;display:grid;place-items:center;color:white;background:linear-gradient(145deg,#777bf6,#5359df);box-shadow:0 7px 20px #5b61e83b;z-index:2}
-              .transfer-orb svg{width:19px;height:19px}
-              .transfer-line{position:absolute;left:calc(50% - 76px);right:calc(50% - 76px);top:44%;height:1px;background:linear-gradient(90deg,#d5d7ff,#8d91f4,#d5d7ff)}
-              .transfer-packet{position:absolute;left:calc(50% - 70px);top:calc(44% - 3px);width:6px;height:6px;border-radius:50%;background:#6569ed;box-shadow:0 0 0 4px #6569ed1a;opacity:0}
-              .transfer-bridge.transferring .transfer-packet{opacity:1;animation:transfer-flight 1.5s linear infinite}
-              .transfer-bridge.transferring .transfer-packet.p2{animation-delay:.5s}.transfer-bridge.transferring .transfer-packet.p3{animation-delay:1s}
-              .transfer-bridge.paired .transfer-orb,.transfer-bridge.transferring .transfer-orb{animation:transfer-glow 2.2s ease-in-out infinite}
-              .transfer-caption{position:absolute;bottom:13px;left:8px;right:8px;text-align:center;font-size:11px;color:#596176}
-              .mobile-section{margin-top:20px}
-              .mobile-section-title{font-size:12px;font-weight:780;color:#3c4559;margin:0 0 10px;letter-spacing:-.01em}
-              .upload-button{position:relative;display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:14px 16px;border:0;border-radius:13px;background:var(--accent);color:#fff;font-weight:730;font-size:13px;box-shadow:0 7px 16px #5b61e81f;transition:background .18s,transform .18s}
-              .upload-button:hover{background:var(--accent-dark);transform:translateY(-1px)}
-              .upload-button svg{width:17px;height:17px}
-              .upload-button input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
-              .progress-wrap{margin-top:15px;padding:13px;background:#f8f8ff;border:1px solid #e8e8ff;border-radius:12px}
-              .progress-meta{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11px;color:#687087;margin-bottom:8px}
-              #progressStatus{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-              #progressPercent{font-weight:800;color:var(--accent)}
-              .progress-track{height:5px;border-radius:999px;background:#e6e7f2;overflow:hidden}
-              #progressBar{height:100%;border-radius:999px;background:linear-gradient(90deg,#8588fa,#5b61e8);transition:width .15s}
-              .mobile-field{width:100%;display:block;border:1px solid var(--line);background:#fafbfe;color:#394258;border-radius:11px;padding:12px;font-size:12px;resize:vertical;min-height:68px}
-              .mobile-field::placeholder{color:#a0a6b5}
-              .secondary-button{width:100%;border:1px solid var(--line);background:#fff;color:#535d73;border-radius:11px;padding:11px 12px;font-size:12px;font-weight:700;margin-top:8px;transition:background .18s}
-              .secondary-button:hover{background:#f7f8fc}
-              .mobile-divider{border:0;border-top:1px solid #edf0f5;margin:21px 0}
-              .mobile-file-list{display:flex;flex-direction:column;gap:7px;max-height:200px;overflow:auto}
-              .mobile-file-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px;background:#fafbfe;border:1px solid #eff1f6;border-radius:11px}
-              .mobile-file-name{font-size:11px;color:#41495d;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-              .download-link{flex-shrink:0;text-decoration:none;color:var(--accent);background:var(--accent-soft);border-radius:8px;padding:7px 9px;font-size:10px;font-weight:750}
-              .download-link:hover{background:#e7e8ff}
-              .mobile-empty{padding:16px 8px;text-align:center;color:#9aa1b0;font-size:11px}
-              .toast{margin-top:12px;padding:11px 12px;border-radius:11px;font-size:11px;font-weight:650;border:1px solid transparent}
-              .toast.success{background:#eef9f4;color:var(--green);border-color:#d9f0e7}
-              .toast.error{background:#fff2f4;color:var(--red);border-color:#f5dfe4}
-              .pin-overlay{position:fixed;inset:0;z-index:50;background:rgba(246,247,251,.88);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center;padding:20px}
-              .pin-card{width:100%;max-width:370px;background:#fff;border:1px solid var(--line);border-radius:24px;padding:27px 24px;box-shadow:0 24px 70px rgba(25,35,66,.13);text-align:center}
-              .pin-symbol{width:48px;height:48px;border-radius:16px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;margin:0 auto 17px}
-              .pin-symbol svg{width:23px;height:23px}
-              .pin-card .mobile-heading{font-size:22px}
-              .pin-input{width:100%;border:1px solid #e2e5ef;background:#fafbfe;border-radius:13px;padding:14px 10px;text-align:center;font:750 24px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.28em;color:var(--ink);margin:20px 0 12px}
-              .pin-input:focus{border-color:#a5a7ff;outline:3px solid #a5a7ff33}
-              .pin-submit{width:100%;border:0;background:var(--accent);color:#fff;border-radius:12px;padding:13px;font-weight:750;font-size:13px}
-              .pin-submit:hover{background:var(--accent-dark)}
-              .pin-error{font-size:11px;color:var(--red);margin:10px 0 0}
-              .hidden{display:none!important}
-              @keyframes transfer-flight{0%{transform:translateX(0) scale(.7);opacity:0}14%{opacity:1}85%{opacity:1}100%{transform:translateX(140px) scale(1.1);opacity:0}}
-              @keyframes transfer-glow{0%,100%{box-shadow:0 7px 20px #5b61e83b}50%{box-shadow:0 7px 28px #5b61e86b}}
-              @media(max-width:380px){body.mobile-app{padding:15px 10px}.mobile-card{padding:17px}.mobile-topline{align-items:flex-start}.mobile-heading{font-size:18px}.pin-card{padding:23px 18px}}
-              @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.transfer-packet{display:none}}
-            </style>
-        <body class="mobile-app">
-            <!-- Vinculación por PIN -->
-            <div id="pinModal" class="pin-overlay">
-              <div class="pin-card">
-                <div class="mobile-brand" style="justify-content:center;margin:0 0 25px">
-                  <div class="mobile-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7.5 12 4l5 3.5v9L12 20l-5-3.5z"/><path d="m7.5 8 4.5 3 4.5-3M12 11v8"/></svg></div>
-                  <div style="text-align:left"><div class="mobile-brand-name">AetherDrop</div><div class="mobile-brand-sub">Transferencias en tu red local</div></div>
-                </div>
-                <div class="pin-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg></div>
-                <h2 class="mobile-heading">Vincula tu dispositivo</h2>
-                <p class="mobile-muted">Introduce el código de seis dígitos que aparece en AetherDrop para ordenador.</p>
-                <input type="password" id="pinInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="••••••" class="pin-input" aria-label="PIN de seis dígitos">
-                <button id="pinSubmit" class="pin-submit">Conectar dispositivo</button>
-                <p id="pinError" class="pin-error hidden">PIN incorrecto.</p>
-              </div>
-            </div>
+    let html = r###"<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0b14">
+<title>AetherDrop</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0b14;--surface:#12141f;--surface2:#181a28;--surface3:#1e2033;
+    --ink:#eef0f8;--ink2:#b8bdd4;--ink3:#7a80a0;
+    --line:rgba(255,255,255,.07);--line2:rgba(255,255,255,.12);
+    --accent:#6366f1;--accent-l:#818cf8;--accent-g:rgba(99,102,241,.3);--accent-s:rgba(99,102,241,.12);
+    --green:#34d399;--green-s:rgba(52,211,153,.12);--green-g:rgba(52,211,153,.28);
+    --red:#f87171;--red-s:rgba(248,113,113,.12);
+    --r-sm:10px;--r-md:16px;--r-lg:22px;--r-xl:28px;
+  }
+  html,body{height:100%;overscroll-behavior:none}
+  body{
+    background:var(--bg);color:var(--ink);
+    font:14px/1.5 'Inter',ui-sans-serif,system-ui,-apple-system,sans-serif;
+    letter-spacing:-.012em;
+    display:flex;flex-direction:column;align-items:center;
+    padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0);
+    overflow-x:hidden;overflow-y:auto;
+  }
 
-            <main id="mainApp" class="mobile-shell hidden">
-              <header class="mobile-topline">
-                <div class="mobile-brand" style="margin:0">
-                  <div class="mobile-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7.5 12 4l5 3.5v9L12 20l-5-3.5z"/><path d="m7.5 8 4.5 3 4.5-3M12 11v8"/></svg></div>
-                  <div><div class="mobile-brand-name">AetherDrop</div><div class="mobile-brand-sub">Listo para compartir</div></div>
-                </div>
-                <span class="online-pill">Vinculado</span>
-              </header>
+  /* Ambient orbs */
+  .orbs{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+  .orb{position:absolute;border-radius:50%;filter:blur(70px);animation:orb-float 18s ease-in-out infinite}
+  .orb1{width:350px;height:350px;background:radial-gradient(circle,rgba(99,102,241,.18),transparent 70%);top:-80px;left:-80px}
+  .orb2{width:250px;height:250px;background:radial-gradient(circle,rgba(139,92,246,.14),transparent 70%);bottom:-40px;right:-40px;animation-delay:-9s}
+  .orb3{width:180px;height:180px;background:radial-gradient(circle,rgba(52,211,153,.1),transparent 70%);top:40%;left:30%;animation-delay:-5s}
+  @keyframes orb-float{0%,100%{transform:translate(0,0) scale(1)}40%{transform:translate(20px,16px) scale(1.07)}70%{transform:translate(-12px,22px) scale(.95)}}
 
-              <section class="mobile-card">
-                <div>
-                  <h1 class="mobile-heading">Envía archivos fácilmente.</h1>
-                  <p class="mobile-muted">Del móvil al ordenador, en unos segundos.</p>
-                </div>
-                <div id="mobileBridge" class="transfer-bridge" aria-label="Conexión visual entre móvil y ordenador">
-                  <div class="transfer-line"></div>
-                  <span class="transfer-packet"></span><span class="transfer-packet p2"></span><span class="transfer-packet p3"></span>
-                  <div class="transfer-device phone" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 18.5h4"/></svg></div>
-                  <div class="transfer-orb" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
-                  <div class="transfer-device pc" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
-                  <div id="bridgeCaption" class="transfer-caption">Móvil vinculado · listo para transferir</div>
-                </div>
+  /* Shell */
+  .shell{position:relative;z-index:1;width:100%;max-width:430px;padding:28px 18px 32px;display:flex;flex-direction:column;gap:0;min-height:100vh}
 
-                <label class="upload-button">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m-5 5 5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>
-                  Elegir archivos para enviar
-                  <input type="file" id="fileInput" multiple>
-                </label>
+  /* Brand */
+  .brand{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+  .brand-mark{
+    width:44px;height:44px;border-radius:14px;flex-shrink:0;
+    background:linear-gradient(135deg,#6366f1,#8b5cf6);
+    display:grid;place-items:center;color:#fff;
+    box-shadow:0 6px 20px rgba(99,102,241,.45),0 0 0 1px rgba(255,255,255,.1);
+  }
+  .brand-mark svg{width:23px;height:23px}
+  .brand-name{font-size:20px;font-weight:780;letter-spacing:-.06em;color:var(--ink)}
+  .brand-sub{font-size:11px;color:var(--ink3);margin-top:1px}
+  .brand-pill{
+    margin-left:auto;
+    display:inline-flex;align-items:center;gap:6px;
+    padding:6px 10px;border:1px solid rgba(52,211,153,.25);
+    background:rgba(52,211,153,.08);border-radius:999px;
+    color:var(--green);font-size:10px;font-weight:700;white-space:nowrap;
+  }
+  .brand-pill::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px rgba(52,211,153,.2);animation:live-p 2s ease-in-out infinite}
+  @keyframes live-p{0%,100%{box-shadow:0 0 0 3px rgba(52,211,153,.2)}50%{box-shadow:0 0 0 5px rgba(52,211,153,.08)}}
 
-                <div id="progressContainer" class="progress-wrap hidden">
-                  <div class="progress-meta"><span id="progressStatus">Enviando archivos…</span><span id="progressPercent">0%</span></div>
-                  <div class="progress-track"><div id="progressBar" style="width:0%"></div></div>
-                </div>
-                <button type="button" id="pauseUploadButton" class="secondary-button hidden">Pausar transferencia</button>
-                <button type="button" id="cancelUploadButton" class="secondary-button hidden" style="border-color:#f5dfe4;color:#a8324a">Cancelar transferencia</button>
-                <div id="toast" class="hidden"></div>
+  /* Cards */
+  .card{
+    background:var(--surface);border:1px solid var(--line2);
+    border-radius:var(--r-xl);overflow:hidden;
+    box-shadow:0 8px 32px rgba(0,0,0,.45);
+    position:relative;
+  }
+  .card::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(145deg,rgba(255,255,255,.04),transparent 55%);pointer-events:none}
+  .card-body{padding:22px}
+  .card+.card{margin-top:14px}
 
-                <hr class="mobile-divider">
-                <section>
-                  <div class="mobile-section-title">Portapapeles compartido</div>
-                  <textarea id="clipboardText" rows="3" placeholder="Escribe o pega texto para enviarlo al ordenador…" class="mobile-field"></textarea>
-                  <button id="sendClipboardButton" class="secondary-button">Enviar texto al ordenador</button>
-                  <button id="refreshClipboardButton" class="secondary-button" style="margin-top:6px">Actualizar desde el ordenador</button>
-                </section>
+  /* PIN overlay */
+  .pin-overlay{
+    position:fixed;inset:0;z-index:100;
+    background:rgba(10,11,20,.9);backdrop-filter:blur(16px);
+    display:flex;align-items:center;justify-content:center;padding:20px;
+  }
+  .pin-card{
+    width:100%;max-width:360px;
+    background:var(--surface);
+    border:1px solid var(--line2);
+    border-radius:var(--r-xl);
+    padding:28px 24px;
+    box-shadow:0 32px 80px rgba(0,0,0,.7);
+    text-align:center;
+    position:relative;overflow:hidden;
+    animation:card-appear .35s cubic-bezier(.34,1.56,.64,1);
+  }
+  @keyframes card-appear{from{opacity:0;transform:scale(.92) translateY(20px)}to{opacity:1;transform:none}}
+  .pin-card::before{content:'';position:absolute;inset:0;background:linear-gradient(145deg,rgba(255,255,255,.04),transparent 55%);pointer-events:none}
 
-                <hr class="mobile-divider">
-                <section>
-                  <div class="mobile-topline" style="margin-bottom:10px">
-                    <div class="mobile-section-title" style="margin:0">Archivos del ordenador</div>
-                    <span style="font-size:10px;color:#9299aa">Para descargar</span>
-                  </div>
-                  <div id="fileList" class="mobile-file-list"><p class="mobile-empty">No hay archivos disponibles.</p></div>
-                </section>
-              </section>
-              <p style="text-align:center;font-size:10px;color:#a0a6b5;margin:14px 0 0">Transferencia local · AetherDrop</p>
-            </main>
-            <script src="/sha256.js" defer></script>
-            <script src="/mobile.js" defer></script>
-        </body>
-        </html>
-    "###;
+  .pin-logo{display:flex;align-items:center;gap:11px;justify-content:center;margin-bottom:28px}
+  .pin-lock{
+    width:52px;height:52px;border-radius:17px;
+    background:linear-gradient(135deg,rgba(99,102,241,.2),rgba(139,92,246,.15));
+    border:1px solid rgba(99,102,241,.3);
+    display:grid;place-items:center;color:var(--accent-l);margin:0 auto 18px;
+    animation:lock-pulse 3s ease-in-out infinite;
+  }
+  @keyframes lock-pulse{0%,100%{box-shadow:0 0 0 0 rgba(99,102,241,.3)}50%{box-shadow:0 0 0 8px rgba(99,102,241,.05)}}
+  .pin-lock svg{width:24px;height:24px}
+  .pin-title{font-size:22px;font-weight:780;letter-spacing:-.06em;color:var(--ink);margin-bottom:8px}
+  .pin-desc{font-size:12px;color:var(--ink3);line-height:1.6;margin-bottom:22px}
+
+  .pin-digits{
+    display:flex;gap:10px;justify-content:center;margin-bottom:16px;
+  }
+  .pin-digit{
+    width:46px;height:56px;
+    background:var(--surface3);border:1.5px solid var(--line2);
+    border-radius:12px;
+    display:grid;place-items:center;
+    font:700 26px/1 ui-monospace,monospace;
+    letter-spacing:0;color:var(--accent-l);
+    transition:border-color .2s,box-shadow .2s,background .2s;
+  }
+  .pin-digit.filled{background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.4)}
+  .pin-digit.active{border-color:var(--accent-l);box-shadow:0 0 0 3px rgba(99,102,241,.18);animation:digit-pop .15s ease}
+  @keyframes digit-pop{0%{transform:scale(.9)}60%{transform:scale(1.08)}100%{transform:scale(1)}}
+
+  .pin-input-hidden{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+  .pin-tap-area{
+    width:100%;padding:14px;border-radius:12px;
+    background:var(--surface3);border:1px dashed var(--line2);
+    color:var(--ink3);font-size:12px;cursor:pointer;
+    margin-bottom:14px;
+    transition:background .2s,border-color .2s;
+  }
+  .pin-tap-area:hover{background:var(--surface2);border-color:var(--line2)}
+
+  .pin-submit{
+    width:100%;border:0;border-radius:14px;padding:14px;
+    background:linear-gradient(135deg,var(--accent),#7c3aed);
+    color:#fff;font-size:14px;font-weight:750;
+    box-shadow:0 6px 20px rgba(99,102,241,.4);
+    transition:transform .2s cubic-bezier(.34,1.56,.64,1),box-shadow .2s;
+  }
+  .pin-submit:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(99,102,241,.55)}
+  .pin-submit:active{transform:scale(.97)}
+  .pin-submit:disabled{opacity:.5;cursor:wait}
+  .pin-error{font-size:11px;color:var(--red);margin-top:10px;padding:8px 10px;background:var(--red-s);border-radius:8px;border:1px solid rgba(248,113,113,.2)}
+  .hidden{display:none!important}
+
+  /* ── Bridge / status ── */
+  .bridge{
+    position:relative;overflow:hidden;min-height:140px;
+    border:1px solid var(--line2);border-radius:17px;
+    background:radial-gradient(ellipse at 50% 50%,rgba(99,102,241,.1),transparent 65%),var(--surface3);
+    margin:18px 0 14px;
+    transition:border-color .4s;
+  }
+  .bridge.paired{border-color:rgba(52,211,153,.3)}
+  .bridge.transferring{border-color:rgba(99,102,241,.4)}
+
+  .bridge-ring{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);border-radius:50%;border:1px solid rgba(99,102,241,.18);animation:ring-out 2.8s ease-out infinite;pointer-events:none}
+  .bridge-ring.r1{width:60px;height:60px}
+  .bridge-ring.r2{width:60px;height:60px;animation-delay:.9s}
+  .bridge-ring.r3{width:60px;height:60px;animation-delay:1.8s}
+  @keyframes ring-out{0%{transform:translate(-50%,-50%) scale(1);opacity:.6}100%{transform:translate(-50%,-50%) scale(2.6);opacity:0}}
+  .bridge.paired .bridge-ring{border-color:rgba(52,211,153,.2)}
+
+  .bridge-track{position:absolute;left:calc(50% - 72px);right:calc(50% - 72px);height:1px;top:46%;background:linear-gradient(90deg,transparent,rgba(99,102,241,.6),transparent);transition:background .4s}
+  .bridge.paired .bridge-track{background:linear-gradient(90deg,transparent,rgba(52,211,153,.7),transparent)}
+
+  .bridge-packet{position:absolute;top:calc(46% - 3px);left:calc(50% - 68px);width:6px;height:6px;border-radius:50%;background:var(--accent-l);box-shadow:0 0 8px var(--accent-l);opacity:0}
+  .bridge.transferring .bridge-packet{animation:pkt 1.6s linear infinite}
+  .bridge-packet.p2{animation-delay:.53s!important}
+  .bridge-packet.p3{animation-delay:1.06s!important}
+  @keyframes pkt{0%{transform:translateX(0) scale(.6);opacity:0}12%{opacity:1}88%{opacity:1}100%{transform:translateX(136px) scale(1);opacity:0}}
+
+  .bridge-core{
+    position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);
+    width:42px;height:42px;border-radius:14px;
+    background:linear-gradient(145deg,#7c3aed,#4f46e5);
+    box-shadow:0 6px 22px rgba(79,70,229,.5),0 0 0 1px rgba(255,255,255,.1);
+    display:grid;place-items:center;color:#fff;z-index:3;
+    animation:core-idle 3s ease-in-out infinite;transition:background .4s,box-shadow .4s;
+  }
+  .bridge.paired .bridge-core{background:linear-gradient(145deg,#059669,#10b981);box-shadow:0 6px 22px rgba(16,185,129,.5),0 0 0 1px rgba(255,255,255,.1);animation:core-alive 2s ease-in-out infinite}
+  .bridge-core svg{width:19px;height:19px}
+  @keyframes core-idle{0%,100%{box-shadow:0 6px 22px rgba(79,70,229,.5),0 0 0 1px rgba(255,255,255,.1)}50%{box-shadow:0 8px 30px rgba(79,70,229,.75),0 0 0 1px rgba(255,255,255,.15)}}
+  @keyframes core-alive{0%,100%{box-shadow:0 6px 22px rgba(16,185,129,.5),0 0 0 1px rgba(255,255,255,.1);transform:translate(-50%,-50%) scale(1)}50%{box-shadow:0 10px 34px rgba(16,185,129,.75),0 0 0 1px rgba(255,255,255,.2);transform:translate(-50%,-50%) scale(1.07)}}
+
+  .bridge-dev{position:absolute;top:46%;transform:translateY(-50%);width:44px;height:52px;border-radius:12px;border:1px solid var(--line2);background:var(--surface2);display:grid;place-items:center;color:var(--ink3);z-index:2;box-shadow:0 4px 12px rgba(0,0,0,.3);transition:color .4s,border-color .4s}
+  .bridge-dev svg{width:19px;height:19px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .bridge-dev.phone{left:calc(50% - 100px)}
+  .bridge-dev.pc{right:calc(50% - 100px)}
+  .bridge.paired .bridge-dev{color:var(--green);border-color:rgba(52,211,153,.3)}
+
+  .bridge-cap{position:absolute;bottom:10px;left:8px;right:8px;text-align:center;z-index:4}
+  .bridge-status{font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px;color:var(--ink2);transition:color .4s}
+  .bridge.paired .bridge-status{color:var(--green)}
+  .bridge-dot{width:6px;height:6px;border-radius:50%;background:var(--ink3);transition:background .4s,box-shadow .4s}
+  .bridge.paired .bridge-dot{background:var(--green);box-shadow:0 0 0 3px rgba(52,211,153,.2);animation:live-p 2s ease-in-out infinite}
+  .bridge-note{font-size:10px;color:var(--ink3);margin-top:2px;transition:color .4s}
+  .bridge.paired .bridge-note{color:rgba(52,211,153,.7)}
+
+  /* ── Upload button ── */
+  .upload-btn{
+    position:relative;display:flex;align-items:center;justify-content:center;gap:10px;
+    width:100%;padding:15px 18px;border:0;border-radius:15px;
+    background:linear-gradient(135deg,var(--accent),#7c3aed);
+    color:#fff;font-size:14px;font-weight:730;
+    box-shadow:0 6px 20px rgba(99,102,241,.38);
+    transition:transform .2s cubic-bezier(.34,1.56,.64,1),box-shadow .2s;overflow:hidden;
+  }
+  .upload-btn:hover{transform:translateY(-2px) scale(1.01);box-shadow:0 10px 28px rgba(99,102,241,.55)}
+  .upload-btn:active{transform:scale(.98)}
+  .upload-btn::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.12),transparent);pointer-events:none}
+  .upload-btn svg{width:18px;height:18px;flex-shrink:0}
+  .upload-btn input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+
+  /* ── Progress ── */
+  .prog-wrap{
+    margin-top:12px;padding:14px;
+    background:var(--surface3);border:1px solid var(--line2);
+    border-radius:14px;animation:slide-in .2s ease;
+  }
+  @keyframes slide-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+  .prog-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--ink3);margin-bottom:9px}
+  #progressStatus{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  #progressPercent{font-weight:800;color:var(--accent-l);flex-shrink:0}
+  .prog-track{height:4px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden}
+  #progressBar{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-l));transition:width .15s;box-shadow:0 0 8px rgba(99,102,241,.5)}
+
+  /* ── Secondary buttons ── */
+  .sec-btn{
+    width:100%;margin-top:8px;
+    border:1px solid var(--line2);background:var(--surface3);
+    color:var(--ink2);border-radius:12px;padding:11px 14px;
+    font-size:12px;font-weight:700;
+    transition:background .18s,border-color .18s,color .18s;
+  }
+  .sec-btn:hover{background:var(--surface2);color:var(--ink)}
+  .sec-btn.danger{border-color:rgba(248,113,113,.25);color:var(--red)}
+  .sec-btn.danger:hover{background:var(--red-s)}
+
+  /* ── Toast ── */
+  .toast{
+    margin-top:12px;padding:11px 13px;border-radius:11px;
+    font-size:11px;font-weight:650;border:1px solid transparent;
+    animation:slide-in .2s ease;
+  }
+  .toast.success{background:var(--green-s);color:var(--green);border-color:rgba(52,211,153,.25)}
+  .toast.error{background:var(--red-s);color:var(--red);border-color:rgba(248,113,113,.25)}
+
+  /* ── Divider ── */
+  .divider{border:0;border-top:1px solid var(--line);margin:20px 0}
+
+  /* ── Section title ── */
+  .sec-title{font-size:11px;font-weight:800;color:var(--ink3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:10px}
+
+  /* ── Clipboard ── */
+  .clip-field{
+    width:100%;background:var(--surface3);border:1px solid var(--line2);
+    color:var(--ink);border-radius:12px;padding:12px;font:inherit;font-size:12px;
+    resize:vertical;min-height:70px;transition:border-color .2s;
+  }
+  .clip-field::placeholder{color:var(--ink3)}
+  .clip-field:focus{outline:none;border-color:rgba(99,102,241,.5);box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+
+  /* ── File list ── */
+  .file-list{display:flex;flex-direction:column;gap:7px;max-height:200px;overflow:auto}
+  .file-item{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:10px 12px;
+    background:var(--surface3);border:1px solid var(--line);border-radius:11px;
+    animation:slide-in .2s ease;transition:border-color .2s;
+  }
+  .file-item:hover{border-color:var(--line2)}
+  .file-name{font-size:11px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+  .dl-link{
+    flex-shrink:0;text-decoration:none;
+    padding:7px 10px;border-radius:8px;font-size:10px;font-weight:750;
+    background:var(--accent-s);color:var(--accent-l);
+    border:1px solid rgba(99,102,241,.2);
+    transition:background .18s,border-color .18s;
+  }
+  .dl-link:hover{background:rgba(99,102,241,.2);border-color:rgba(99,102,241,.35)}
+  .empty-msg{padding:16px 8px;text-align:center;color:var(--ink3);font-size:11px}
+
+  /* ── Footer ── */
+  .foot{margin-top:18px;text-align:center;font-size:10px;color:var(--ink3)}
+
+  @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.bridge-packet,.orb{display:none}}
+</style>
+</head>
+<body>
+<!-- Ambient orbs -->
+<div class="orbs" aria-hidden="true">
+  <div class="orb orb1"></div>
+  <div class="orb orb2"></div>
+  <div class="orb orb3"></div>
+</div>
+
+<!-- PIN modal -->
+<div id="pinModal" class="pin-overlay">
+  <div class="pin-card">
+    <div class="pin-logo">
+      <div class="brand-mark" style="width:40px;height:40px;border-radius:13px" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7.5 12 4l5 3.5v9L12 20l-5-3.5z"/><path d="m7.5 8 4.5 3 4.5-3M12 11v8"/></svg>
+      </div>
+      <div>
+        <div class="brand-name" style="font-size:17px">AetherDrop</div>
+        <div class="brand-sub">Red local segura</div>
+      </div>
+    </div>
+    <div class="pin-lock" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
+    </div>
+    <div class="pin-title">Vincula tu dispositivo</div>
+    <div class="pin-desc">Introduce el código de 6 dígitos que aparece en AetherDrop en tu ordenador.</div>
+
+    <!-- Visual digit display -->
+    <div class="pin-digits" aria-hidden="true" id="pinDigits">
+      <div class="pin-digit" id="pd0">·</div>
+      <div class="pin-digit" id="pd1">·</div>
+      <div class="pin-digit" id="pd2">·</div>
+      <div class="pin-digit" id="pd3">·</div>
+      <div class="pin-digit" id="pd4">·</div>
+      <div class="pin-digit" id="pd5">·</div>
+    </div>
+
+    <!-- Hidden real input -->
+    <input type="tel" id="pinInput" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" class="pin-input-hidden" aria-label="PIN de 6 dígitos">
+
+    <div class="pin-tap-area" id="pinTapArea" role="button" tabindex="0" aria-label="Toca para escribir el PIN">
+      📱 Toca aquí para escribir el PIN
+    </div>
+
+    <button id="pinSubmit" class="pin-submit" disabled>Conectar dispositivo</button>
+    <p id="pinError" class="pin-error hidden">PIN incorrecto.</p>
+  </div>
+</div>
+
+<!-- Main app (shown after auth) -->
+<main id="mainApp" class="shell hidden">
+
+  <!-- Brand header -->
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7.5 12 4l5 3.5v9L12 20l-5-3.5z"/><path d="m7.5 8 4.5 3 4.5-3M12 11v8"/></svg>
+    </div>
+    <div>
+      <div class="brand-name">AetherDrop</div>
+      <div class="brand-sub">Listo para compartir</div>
+    </div>
+    <div class="brand-pill">Vinculado</div>
+  </div>
+
+  <!-- Transfer card -->
+  <div class="card">
+    <div class="card-body">
+      <div style="margin-bottom:4px">
+        <div style="font-size:18px;font-weight:780;letter-spacing:-.06em;color:var(--ink)">Envía archivos.</div>
+        <div style="font-size:11px;color:var(--ink3);margin-top:3px">Del móvil al PC · cifrado · sin internet.</div>
+      </div>
+
+      <!-- Bridge animation -->
+      <div id="mobileBridge" class="bridge" aria-label="Estado de la conexión">
+        <div class="bridge-ring r1" aria-hidden="true"></div>
+        <div class="bridge-ring r2" aria-hidden="true"></div>
+        <div class="bridge-ring r3" aria-hidden="true"></div>
+        <div class="bridge-track" aria-hidden="true"></div>
+        <span class="bridge-packet" aria-hidden="true"></span>
+        <span class="bridge-packet p2" aria-hidden="true"></span>
+        <span class="bridge-packet p3" aria-hidden="true"></span>
+        <div class="bridge-dev phone" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 18.5h4"/></svg>
+        </div>
+        <div class="bridge-core" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </div>
+        <div class="bridge-dev pc" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <div class="bridge-cap">
+          <div id="bridgeStatus" class="bridge-status"><span class="bridge-dot"></span>Vinculado · listo para transferir</div>
+          <div id="bridgeNote" class="bridge-note">Los datos viajan sólo por tu red local</div>
+        </div>
+      </div>
+
+      <!-- Upload -->
+      <label class="upload-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m-5 5 5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>
+        Elegir archivos para enviar
+        <input type="file" id="fileInput" multiple>
+      </label>
+
+      <div id="progressContainer" class="prog-wrap hidden">
+        <div class="prog-meta">
+          <span id="progressStatus">Enviando…</span>
+          <span id="progressPercent">0%</span>
+        </div>
+        <div class="prog-track"><div id="progressBar" style="width:0%"></div></div>
+      </div>
+      <button type="button" id="pauseUploadButton" class="sec-btn hidden">Pausar transferencia</button>
+      <button type="button" id="cancelUploadButton" class="sec-btn danger hidden">Cancelar transferencia</button>
+      <div id="toast" class="hidden"></div>
+    </div>
+  </div>
+
+  <!-- Clipboard card -->
+  <div class="card" style="margin-top:12px">
+    <div class="card-body">
+      <div class="sec-title">Portapapeles compartido</div>
+      <textarea id="clipboardText" class="clip-field" rows="3" placeholder="Escribe o pega texto para enviarlo al PC…"></textarea>
+      <button id="sendClipboardButton" class="sec-btn">Enviar texto al PC</button>
+      <button id="refreshClipboardButton" class="sec-btn" style="margin-top:6px">Actualizar desde el PC</button>
+    </div>
+  </div>
+
+  <!-- PC files card -->
+  <div class="card" style="margin-top:12px">
+    <div class="card-body">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div class="sec-title" style="margin:0">Archivos del PC</div>
+        <span style="font-size:9px;color:var(--ink3);text-transform:uppercase;letter-spacing:.08em">Para descargar</span>
+      </div>
+      <div id="fileList" class="file-list"><p class="empty-msg">No hay archivos disponibles.</p></div>
+    </div>
+  </div>
+
+  <div class="foot">Transferencia local · AetherDrop · Sin nube</div>
+</main>
+
+<script src="/sha256.js" defer></script>
+<script src="/mobile.js" defer></script>
+<script>
+  // ── Enhanced PIN entry UX ──────────────────────────────────
+  const pinInput = document.getElementById('pinInput');
+  const pinSubmit = document.getElementById('pinSubmit');
+  const pinTapArea = document.getElementById('pinTapArea');
+  const digits = Array.from({length:6}, (_,i) => document.getElementById('pd'+i));
+
+  function updateDigitDisplay(val) {
+    digits.forEach((d, i) => {
+      const ch = val[i];
+      d.textContent = ch ? '•' : '·';
+      d.className = 'pin-digit' + (ch ? ' filled' : '') + (i === val.length ? ' active' : '');
+    });
+    pinSubmit.disabled = val.length < 6;
+  }
+
+  pinInput.addEventListener('input', () => {
+    const v = pinInput.value.replace(/\D/g,'').slice(0,6);
+    pinInput.value = v;
+    updateDigitDisplay(v);
+  });
+
+  function focusPin() { pinInput.focus(); pinInput.setSelectionRange(pinInput.value.length, pinInput.value.length); }
+  pinTapArea.addEventListener('click', focusPin);
+  pinTapArea.addEventListener('keydown', e => { if(e.key==='Enter'||e.key===' ') focusPin(); });
+  document.getElementById('pinDigits').addEventListener('click', focusPin);
+
+  // Auto-focus on load (mobile keyboards)
+  setTimeout(() => { try { pinInput.focus(); } catch(_){} }, 400);
+  updateDigitDisplay('');
+</script>
+</body>
+</html>"###;
     axum::response::Response::builder()
         .header("Content-Type", "text/html; charset=utf-8")
         .header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -1011,6 +1394,7 @@ mod upload_filename_tests {
         let state = AppState {
             save_dir: Arc::new(RwLock::new(directory)),
             pc_files: Arc::new(RwLock::new(Vec::new())),
+            received_files: Arc::new(RwLock::new(Vec::new())),
             pin: "123456".to_owned(),
             trusted_devices: Arc::new(RwLock::new(vec![device_id.clone()])),
             clipboard_text: Arc::new(RwLock::new(String::new())),
@@ -1350,7 +1734,7 @@ mod upload_filename_tests {
 
         let mut headers = HeaderMap::new();
         headers.insert("x-chunk-sha256", HeaderValue::from_str(&actual_hash).unwrap());
-        upload_chunk(
+        let _ = upload_chunk(
             State(state.clone()),
             Extension(session.clone()),
             Extension(super::UploadRequestPermit { _permit: Arc::new(state.upload_slots.clone().acquire_owned().await.unwrap()) }),
@@ -2180,6 +2564,21 @@ async fn finish_chunked_upload(
     match result {
         Ok(receipt) => {
             state.pending_uploads.write().await.remove(&transfer_id);
+            let published_path = state.save_dir.read().await.join(&receipt.filename).to_string_lossy().to_string();
+            let rec_info = ReceivedFileInfo {
+                id: uuid::Uuid::new_v4().to_string(),
+                filename: receipt.filename.clone(),
+                size_bytes: receipt.size_bytes,
+                received_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                path: published_path,
+            };
+            {
+                let mut rec_list = state.received_files.write().await;
+                rec_list.insert(0, rec_info);
+                if rec_list.len() > 100 {
+                    rec_list.truncate(100);
+                }
+            }
             let mut completed = state.completed_uploads.write().await;
             completed.retain(|_, record| record.expires_at > Instant::now());
             if completed.len() >= MAX_COMPLETED_UPLOAD_RECEIPTS {
@@ -2600,6 +2999,7 @@ pub fn run() {
     let state = AppState {
         save_dir: Arc::new(RwLock::new(default_dir)),
         pc_files: Arc::new(RwLock::new(Vec::new())),
+        received_files: Arc::new(RwLock::new(Vec::new())),
         pin,
         trusted_devices: Arc::new(RwLock::new(Vec::new())),
         clipboard_text: Arc::new(RwLock::new(String::new())),
@@ -2644,7 +3044,10 @@ pub fn run() {
             remove_pc_file,
             get_shared_files,
             get_trusted_devices,
-            revoke_trusted_device
+            revoke_trusted_device,
+            get_received_files,
+            open_received_file,
+            open_save_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

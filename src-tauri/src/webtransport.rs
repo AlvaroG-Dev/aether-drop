@@ -80,10 +80,17 @@ pub async fn run(
     // Bind an explicit IPv4 wildcard socket instead of relying on platform-specific
     // IPv6 dual-stack behavior for incoming QUIC/UDP traffic.
     let bind_address = SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT));
-    let config = ServerConfig::builder()
+    let mut builder = ServerConfig::builder()
         .with_bind_address(bind_address)
-        .with_identity(identity)
-        .build();
+        .with_identity(identity);
+    builder = builder.keep_alive_interval(Some(Duration::from_secs(3)));
+    let config = match builder.max_idle_timeout(Some(Duration::from_secs(300))) {
+        Ok(b) => b.build(),
+        Err(e) => {
+            let _ = ready.send(Err(format!("Error en config WebTransport: {e}")));
+            return;
+        }
+    };
     let endpoint = match Endpoint::server(config) {
         Ok(endpoint) => endpoint,
         Err(error) => {
@@ -270,13 +277,13 @@ pub async fn run(
                     loop {
                         let streams = tokio::select! {
                             _ = state.server_shutdown.cancelled() => return,
-                            result = timeout(Duration::from_secs(120), connection.accept_bi()) => match result {
+                            result = timeout(Duration::from_secs(300), connection.accept_bi()) => match result {
                                 Ok(Ok(streams)) => streams,
                                 _ => return,
                             }
                         };
                         let (mut response_stream, mut request_stream) = streams;
-                        let request_header = match timeout(Duration::from_secs(10), read_request_header(&mut request_stream)).await {
+                        let request_header = match timeout(Duration::from_secs(20), read_request_header(&mut request_stream)).await {
                             Ok(Ok(header)) => header,
                             _ => {
                                 let _ = response_stream.finish().await;
@@ -305,7 +312,7 @@ pub async fn run(
                                 // Dispatch below returns a bounded protocol error.
                                 None
                             } else {
-                                match timeout(Duration::from_secs(30), read_stream_payload(&mut request_stream, length, cap)).await {
+                                match timeout(Duration::from_secs(120), read_stream_payload(&mut request_stream, length, cap)).await {
                                     Ok(Ok(body)) => {
                                         request_body_fully_read = true;
                                         Some(body)
@@ -756,14 +763,16 @@ mod tests {
     async fn webtransport_dispatch_supports_bounded_upload_and_download_chunks() {
         let dir = std::env::temp_dir().join(format!("aetherdrop-wt-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
-        let path = dir.join("hello.txt");
-        tokio::fs::write(&path, b"hello world").await.unwrap();
+        let raw_path = dir.join("hello.txt");
+        tokio::fs::write(&raw_path, b"hello world").await.unwrap();
+        let path = tokio::fs::canonicalize(&raw_path).await.unwrap();
 
         let device_id = "dev_test123".to_owned();
         let token = "test_token_123".to_owned();
         let state = AppState {
             save_dir: Arc::new(tokio::sync::RwLock::new(dir.clone())),
             pc_files: Arc::new(tokio::sync::RwLock::new(vec![("file1".to_owned(), path.clone())])),
+            received_files: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             pin: "123456".to_owned(),
             trusted_devices: Arc::new(tokio::sync::RwLock::new(vec![device_id.clone()])),
             clipboard_text: Arc::new(tokio::sync::RwLock::new(String::new())),

@@ -175,16 +175,16 @@ export async function connectAetherDrop({ host, hash, pin, deviceId, port = 8443
             session: paired.token,
             ...(data === undefined ? {} : { data }),
             ...(body === null ? {} : { payload_bytes: body.byteLength }),
-          })), 30000, "Timed out sending the request header");
+          })), 60000, "Timed out sending the request header");
           if (body !== null) {
-            await withTimeout(requestWriter.write(body), 30000, "Timed out sending the request body");
+            await withTimeout(requestWriter.write(body), 120000, "Timed out sending the request body");
           }
-          await withTimeout(requestWriter.close(), 10000, "Timed out closing the request stream");
+          await withTimeout(requestWriter.close(), 30000, "Timed out closing the request stream");
 
-          const prefix = await withTimeout(responseReader.readExact(4), 30000, "Timed out waiting for the response");
+          const prefix = await withTimeout(responseReader.readExact(4), 120000, "Timed out waiting for the response");
           const length = new DataView(prefix.buffer, prefix.byteOffset, 4).getUint32(0, false);
           if (!length || length > MAX_HEADER_BYTES) throw new Error("Invalid response header length");
-          const payload = await withTimeout(responseReader.readExact(length), 30000, "Timed out reading the response header");
+          const payload = await withTimeout(responseReader.readExact(length), 60000, "Timed out reading the response header");
           const response = JSON.parse(decoder.decode(payload));
           if (response.request_id !== requestId || response.version !== PROTOCOL_VERSION) {
             throw new Error("Response does not match the request");

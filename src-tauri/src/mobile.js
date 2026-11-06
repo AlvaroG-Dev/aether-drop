@@ -26,7 +26,15 @@
                     const bridge = document.getElementById('mobileBridge');
                     bridge.classList.remove('paired', 'transferring');
                     if (state) bridge.classList.add(state);
-                    document.getElementById('bridgeCaption').textContent = caption;
+                    // Support both old (#bridgeCaption) and new dark-UI (#bridgeStatus/#bridgeNote) layouts
+                    const captionEl = document.getElementById('bridgeCaption');
+                    if (captionEl) captionEl.textContent = caption;
+                    const statusEl = document.getElementById('bridgeStatus');
+                    if (statusEl) {
+                        const dot = statusEl.querySelector('.bridge-dot') || statusEl.querySelector('.bridge-status-dot');
+                        statusEl.textContent = caption;
+                        if (dot) statusEl.prepend(dot);
+                    }
                 }
 
                 function authHeaders() {
@@ -73,15 +81,18 @@
                 }
 
                 async function verifyPin() {
-                    const pinInput = document.getElementById('pinInput');
+                    const pinInputEl = document.getElementById('pinInput');
                     const pinError = document.getElementById('pinError');
-                    const pin = pinInput.value.trim();
+                    const pin = pinInputEl.value.replace(/\D/g, '').trim();
 
                     if (pin.length !== 6 || !/^\d{6}$/.test(pin)) {
                         pinError.innerText = "El PIN debe tener 6 dígitos.";
                         pinError.classList.remove('hidden');
                         return;
                     }
+
+                    const submitBtn = document.getElementById('pinSubmit');
+                    if (submitBtn) submitBtn.disabled = true;
 
                     try {
                         const res = await fetch('/auth', {
@@ -115,6 +126,8 @@
                         pinError.innerText = "Error de conexión con el servidor.";
                         pinError.classList.remove('hidden');
                     }
+                    // Re-enable submit after failure
+                    if (submitBtn) submitBtn.disabled = false;
                 }
 
                 function escapeHtml(value) {
