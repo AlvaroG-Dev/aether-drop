@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0b14">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>AetherDrop · Conexión segura WebTransport</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      color-scheme: dark;
+      --bg: #0a0b14;
+      --surface: #12141f;
+      --surface2: #181a28;
+      --surface3: #1f2235;
+      --ink: #f0f2fb;
+      --ink2: #c0c5dc;
+      --ink3: #7c83a2;
+      --line: rgba(255,255,255,.08);
+      --line2: rgba(255,255,255,.14);
+      --accent: #6366f1;
+      --accent-l: #818cf8;
+      --accent-s: rgba(99,102,241,.14);
+      --green: #34d399;
+      --green-s: rgba(52,211,153,.14);
+      --red: #f87171;
+      --red-s: rgba(248,113,113,.14);
+      --r-md: 14px;
+      --r-lg: 20px;
+      --r-xl: 26px;
+    }
+
+    html, body {
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.5 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+      letter-spacing: -.012em;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: env(safe-area-inset-top, 16px) env(safe-area-inset-right, 16px) env(safe-area-inset-bottom, 20px) env(safe-area-inset-left, 16px);
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    /* Ambient background orbs */
+    .bg-orbs {
+      position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden;
+    }
+    .bg-orb {
+      position: absolute; border-radius: 50%; filter: blur(75px);
+      animation: orb-drift 20s ease-in-out infinite;
+    }
+    .bg-orb-1 { width: 340px; height: 340px; background: radial-gradient(circle, rgba(99,102,241,.18), transparent 70%); top: -90px; left: -90px; }
+    .bg-orb-2 { width: 280px; height: 280px; background: radial-gradient(circle, rgba(139,92,246,.15), transparent 70%); bottom: -60px; right: -60px; animation-delay: -10s; }
+    .bg-orb-3 { width: 200px; height: 200px; background: radial-gradient(circle, rgba(52,211,153,.1), transparent 70%); top: 40%; left: 35%; animation-delay: -15s; }
+    @keyframes orb-drift {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      50% { transform: translate(25px, 20px) scale(1.08); }
+    }
+
+    .shell {
+      position: relative; z-index: 1;
+      width: 100%; max-width: 440px;
+      display: flex; flex-direction: column; gap: 14px;
+      margin: 0 auto;
+    }
+
+    /* Brand Header */
+    .brand-top {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 8px 2px 4px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-mark {
+      width: 38px; height: 38px; border-radius: 12px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      display: grid; place-items: center; color: #fff;
+      box-shadow: 0 6px 18px rgba(99,102,241,.4);
+    }
+    .brand-mark svg { width: 20px; height: 20px; }
+    .brand-title { font-size: 18px; font-weight: 780; letter-spacing: -.05em; color: #fff; }
+    .brand-sub { font-size: 11px; color: var(--ink3); }
+
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 10px; border-radius: 999px;
+      font-size: 10.5px; font-weight: 700;
+      background: var(--surface3); border: 1px solid var(--line2); color: var(--ink3);
+      transition: all .3s;
+    }
+    .status-badge.connected {
+      background: rgba(52,211,153,.1); border-color: rgba(52,211,153,.3); color: var(--green);
+    }
+    .status-badge-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+    }
+    .status-badge.connected .status-badge-dot {
+      box-shadow: 0 0 0 3px rgba(52,211,153,.25);
+    }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line2);
+      border-radius: var(--r-xl);
+      padding: 20px;
+      box-shadow: 0 10px 32px rgba(0,0,0,.45);
+      position: relative; overflow: hidden;
+    }
+    .card::before {
+      content: ''; position: absolute; inset: 0;
+      border-radius: inherit; background: linear-gradient(145deg, rgba(255,255,255,.03), transparent 60%);
+      pointer-events: none;
+    }
+
+    /* PIN Form View */
+    .pin-title { font-size: 20px; font-weight: 780; letter-spacing: -.05em; margin-bottom: 4px; }
+    .pin-sub { font-size: 12px; color: var(--ink3); line-height: 1.5; margin-bottom: 20px; }
+
+    .pin-input-group {
+      display: flex; gap: 8px; justify-content: center; margin-bottom: 16px;
+    }
+    .pin-digit-box {
+      width: 44px; height: 52px; border-radius: 12px;
+      background: var(--surface3); border: 1.5px solid var(--line2);
+      display: grid; place-items: center;
+      font: 780 24px/1 ui-monospace, monospace;
+      color: var(--accent-l);
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .pin-digit-box.filled {
+      border-color: rgba(99,102,241,.5); background: rgba(99,102,241,.1);
+    }
+    .pin-digit-box.active {
+      border-color: var(--accent-l); box-shadow: 0 0 0 3px rgba(99,102,241,.25);
+    }
+
+    .real-pin-input {
+      position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none;
+    }
+
+    .pin-action-btn {
+      width: 100%; border: 0; border-radius: 14px; padding: 13px;
+      background: linear-gradient(135deg, var(--accent), #7c3aed);
+      color: #fff; font-size: 14px; font-weight: 750;
+      box-shadow: 0 6px 20px rgba(99,102,241,.4);
+      cursor: pointer; transition: transform .15s, opacity .15s;
+    }
+    .pin-action-btn:hover { transform: translateY(-1px); }
+    .pin-action-btn:active { transform: scale(.98); }
+    .pin-action-btn:disabled { opacity: .5; cursor: wait; }
+
+    /* Animated Bridge */
+    .bridge {
+      position: relative; overflow: hidden;
+      border: 1px solid var(--line2); border-radius: 16px;
+      background: radial-gradient(ellipse at 50% 50%, rgba(99,102,241,.12) 0%, transparent 70%), var(--surface3);
+      padding: 16px 14px 12px; margin-bottom: 16px;
+      transition: border-color .4s;
+    }
+    .bridge.transferring { border-color: rgba(99,102,241,.5); }
+    .bridge.paired { border-color: rgba(52,211,153,.35); }
+
+    .bridge-track {
+      height: 54px; position: relative;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 16px;
+    }
+    .bridge-line {
+      position: absolute; left: 48px; right: 48px; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(99,102,241,.5), transparent);
+      z-index: 1;
+    }
+    .bridge.transferring .bridge-line {
+      background: linear-gradient(90deg, transparent, rgba(99,102,241,.9), transparent);
+    }
+
+    .bridge-particle {
+      position: absolute; left: 48px; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent-l); box-shadow: 0 0 8px var(--accent-l);
+      opacity: 0; z-index: 2;
+    }
+    .bridge.transferring .bridge-particle {
+      animation: particle-fly 1.6s linear infinite;
+    }
+    .bridge-particle.p2 { animation-delay: .53s !important; }
+    .bridge-particle.p3 { animation-delay: 1.06s !important; }
+    @keyframes particle-fly {
+      0% { left: 48px; opacity: 0; }
+      15% { opacity: 1; }
+      85% { opacity: 1; }
+      100% { left: calc(100% - 54px); opacity: 0; }
+    }
+
+    .bridge-icon-box {
+      width: 42px; height: 46px; border-radius: 11px;
+      background: var(--surface2); border: 1px solid var(--line2);
+      display: grid; place-items: center; color: var(--ink3);
+      z-index: 3; transition: all .3s;
+    }
+    .bridge-icon-box svg { width: 18px; height: 18px; fill: none; stroke: currentColor; }
+    .bridge.paired .bridge-icon-box { color: var(--green); border-color: rgba(52,211,153,.35); }
+
+    .bridge-orb {
+      width: 38px; height: 38px; border-radius: 12px;
+      background: linear-gradient(145deg, #7c3aed, #4f46e5);
+      display: grid; place-items: center; color: #fff;
+      z-index: 3; box-shadow: 0 4px 16px rgba(79,70,229,.4);
+      animation: orb-pulse 2.5s ease-in-out infinite;
+    }
+    .bridge.paired .bridge-orb {
+      background: linear-gradient(145deg, #059669, #10b981);
+      box-shadow: 0 4px 18px rgba(16,185,129,.45);
+    }
+    .bridge-orb svg { width: 17px; height: 17px; }
+    @keyframes orb-pulse {
+      0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); }
+    }
+
+    .bridge-caption {
+      text-align: center; margin-top: 8px; font-size: 11px; color: var(--ink2); font-weight: 700;
+    }
+    .bridge-sub {
+      text-align: center; font-size: 10px; color: var(--ink3); margin-top: 2px;
+    }
+
+    /* Upload Zone */
+    .upload-zone {
+      border: 1.5px dashed var(--line2); border-radius: 16px;
+      padding: 22px 16px; text-align: center;
+      background: var(--surface3); cursor: pointer;
+      position: relative; transition: all .2s;
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+    .upload-zone:hover {
+      border-color: var(--accent-l); background: rgba(99,102,241,.06);
+    }
+    .upload-icon {
+      width: 44px; height: 44px; border-radius: 13px;
+      background: var(--accent-s); color: var(--accent-l);
+      display: grid; place-items: center;
+    }
+    .upload-icon svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 2; }
+    .upload-text-main { font-size: 14px; font-weight: 750; color: #fff; }
+    .upload-text-sub { font-size: 11px; color: var(--ink3); }
+
+    /* Progress card */
+    .progress-box {
+      margin-top: 14px; padding: 14px; border-radius: 14px;
+      background: var(--surface3); border: 1px solid var(--line2);
+      display: none; flex-direction: column; gap: 8px;
+      animation: slide-up .25s ease;
+    }
+    .progress-box.active { display: flex; }
+    @keyframes slide-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    .progress-top {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 11px;
+    }
+    .progress-filename { font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 75%; }
+    .progress-percent { font-weight: 800; color: var(--accent-l); font-family: ui-monospace, monospace; }
+
+    .progress-track {
+      height: 6px; border-radius: 999px; background: rgba(255,255,255,.08);
+      overflow: hidden; position: relative;
+    }
+    .progress-bar {
+      height: 100%; border-radius: 999px; width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-l));
+      box-shadow: 0 0 10px rgba(99,102,241,.6);
+      transition: width .15s ease-out;
+    }
+
+    .progress-details {
+      display: flex; justify-content: space-between;
+      font-size: 10px; color: var(--ink3); font-family: ui-monospace, monospace;
+    }
+
+    /* Clipboard Section */
+    .section-title {
+      font-size: 11px; font-weight: 800; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--ink3); margin-bottom: 8px;
+    }
+    .clip-textarea {
+      width: 100%; background: var(--surface3); border: 1px solid var(--line2);
+      border-radius: 12px; padding: 10px 12px; color: var(--ink);
+      font: inherit; font-size: 12px; resize: vertical; min-height: 68px;
+    }
+    .clip-textarea:focus {
+      outline: none; border-color: var(--accent-l); box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+    }
+    .btn-row { display: flex; gap: 8px; margin-top: 8px; }
+    .sub-btn {
+      flex: 1; padding: 9px 12px; border-radius: 10px;
+      background: var(--surface3); border: 1px solid var(--line2);
+      color: var(--ink2); font-size: 11px; font-weight: 700;
+      cursor: pointer; transition: all .15s;
+    }
+    .sub-btn:hover { background: var(--surface2); color: #fff; }
+
+    /* Shared PC Files List */
+    .pc-file-item {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 9px 12px; border-radius: 10px; background: var(--surface3);
+      border: 1px solid var(--line); margin-top: 6px;
+    }
+    .pc-file-name { font-size: 11.5px; color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .btn-dl {
+      padding: 6px 11px; border-radius: 8px; font-size: 10.5px; font-weight: 750;
+      background: var(--accent-s); color: var(--accent-l); border: 1px solid rgba(99,102,241,.25);
+      cursor: pointer; transition: all .15s; flex-shrink: 0;
+    }
+    .btn-dl:hover { background: rgba(99,102,241,.25); color: #fff; }
+
+    /* Toast */
+    .toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(40px);
+      background: #1e2438; color: #fff; border: 1px solid var(--line2);
+      padding: 10px 18px; border-radius: 999px; font-size: 11.5px; font-weight: 700;
+      display: flex; align-items: center; gap: 7px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.6);
+      opacity: 0; pointer-events: none; transition: all .25s; z-index: 1000;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.ok { border-color: rgba(52,211,153,.35); color: var(--green); }
+    .toast.err { border-color: rgba(248,113,113,.35); color: var(--red); }
+  </style>
+</head>
+<body>
+  <div class="bg-orbs" aria-hidden="true">
+    <div class="bg-orb bg-orb-1"></div>
+    <div class="bg-orb bg-orb-2"></div>
+    <div class="bg-orb bg-orb-3"></div>
+  </div>
+
+  <div class="shell">
+    <!-- Top brand -->
+    <header class="brand-top">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 7.5 12 4l5 3.5v9L12 20l-5-3.5z"/>
+            <path d="m7.5 8 4.5 3 4.5-3M12 11v8"/>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-title">AetherDrop</div>
+          <div class="brand-sub">Red local ultrarrápida</div>
+        </div>
+      </div>
+      <div id="statusBadge" class="status-badge">
+        <span class="status-badge-dot"></span>
+        <span id="statusText">Esperando PIN</span>
+      </div>
+    </header>
+
+    <!-- STEP 1: PIN ENTRY (Shown if not yet paired) -->
+    <section id="pinSection" class="card">
+      <div class="pin-title">Introduce el código del PC</div>
+      <div class="pin-sub">Mira la pantalla de tu ordenador y escribe el código de 6 dígitos que aparece allí.</div>
+
+      <div class="pin-input-group" id="pinDisplayBoxes">
+        <div class="pin-digit-box active" id="pbox0">·</div>
+        <div class="pin-digit-box" id="pbox1">·</div>
+        <div class="pin-digit-box" id="pbox2">·</div>
+        <div class="pin-digit-box" id="pbox3">·</div>
+        <div class="pin-digit-box" id="pbox4">·</div>
+        <div class="pin-digit-box" id="pbox5">·</div>
+      </div>
+
+      <input type="tel" id="hiddenPinInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" class="real-pin-input" aria-label="PIN de 6 dígitos">
+
+      <button id="btnConnect" class="pin-action-btn" type="button" disabled>Conectar con el ordenador</button>
+      <div id="pinErrorMsg" style="color:var(--red);font-size:11px;text-align:center;margin-top:10px;display:none"></div>
+    </section>
+
+    <!-- STEP 2: MAIN DASHBOARD (Shown after successful pairing) -->
+    <section id="appSection" style="display:none;flex-direction:column;gap:14px">
+
+      <!-- Animated Transfer Bridge -->
+      <div class="card" style="padding:16px">
+        <div id="bridgeElement" class="bridge paired">
+          <div class="bridge-track">
+            <div class="bridge-line"></div>
+            <span class="bridge-particle"></span>
+            <span class="bridge-particle p2"></span>
+            <span class="bridge-particle p3"></span>
+
+            <div class="bridge-icon-box" aria-label="Móvil">
+              <svg viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 18.5h4"/></svg>
+            </div>
+            <div class="bridge-orb" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </div>
+            <div class="bridge-icon-box" aria-label="Ordenador">
+              <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            </div>
+          </div>
+          <div id="bridgeCaptionText" class="bridge-caption">Dispositivo vinculado · Listo</div>
+          <div id="bridgeSubText" class="bridge-sub">Transfiriendo por WebTransport seguro (UDP)</div>
+        </div>
+
+        <!-- Big Drag/Drop File Upload Trigger -->
+        <input type="file" id="multiFileInput" multiple style="display:none">
+        <div id="dropZone" class="upload-zone">
+          <div class="upload-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 16V4m-5 5 5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>
+          </div>
+          <div class="upload-text-main">Toca para enviar archivos al PC</div>
+          <div class="upload-text-sub">Vídeos, fotos, documentos de cualquier tamaño (hasta 2 GB)</div>
+        </div>
+
+        <!-- Active Progress Bar -->
+        <div id="progressBox" class="progress-box">
+          <div class="progress-top">
+            <span class="progress-filename" id="pFileName">video.mp4</span>
+            <span class="progress-percent" id="pPercent">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="pBar"></div>
+          </div>
+          <div class="progress-details">
+            <span id="pSpeed">0.0 MB/s</span>
+            <span id="pEta">Calculando…</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Shared Clipboard Card -->
+      <div class="card">
+        <div class="section-title">Portapapeles compartido</div>
+        <textarea id="clipText" class="clip-textarea" placeholder="Escribe o pega texto aquí para enviarlo a tu PC…"></textarea>
+        <div class="btn-row">
+          <button id="btnSendClip" class="sub-btn" type="button">Enviar texto al PC</button>
+          <button id="btnGetClip" class="sub-btn" type="button">Leer portapapeles del PC</button>
+        </div>
+      </div>
+
+      <!-- Files from PC to Download -->
+      <div class="card">
+        <div class="section-title" style="margin-bottom:4px">Archivos disponibles del PC</div>
+        <div id="pcFilesContainer">
+          <div style="font-size:11px;color:var(--ink3);text-align:center;padding:12px 0">No hay archivos compartidos por el PC.</div>
+        </div>
+      </div>
+
+    </section>
+  </div>
+
+  <div id="toastEl" class="toast">
+    <span id="toastMsg">Mensaje</span>
+  </div>
+
+  <script src="./sha256.js"></script>
+  <script type="module">
+    import { connectAetherDrop } from './aetherdrop-webtransport.js?v=2';
+
+    const params = new URLSearchParams(location.search);
+    const host = params.get('host') || '';
+    const hash = params.get('hash') || '';
+
+    // Device ID persistente
+    const deviceKey = 'aetherdrop_device_id';
+    let deviceId = localStorage.getItem(deviceKey);
+    if (!/^dev_[A-Za-z0-9_-]{1,60}$/.test(deviceId || '')) {
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      deviceId = 'dev_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem(deviceKey, deviceId);
+    }
+
+    let client = null;
+    let savedPin = '';
+
+    // DOM Elements
+    const pinSection = document.getElementById('pinSection');
+    const appSection = document.getElementById('appSection');
+    const hiddenPinInput = document.getElementById('hiddenPinInput');
+    const btnConnect = document.getElementById('btnConnect');
+    const pinErrorMsg = document.getElementById('pinErrorMsg');
+    const statusBadge = document.getElementById('statusBadge');
+    const statusText = document.getElementById('statusText');
+    const bridgeElement = document.getElementById('bridgeElement');
+    const bridgeCaptionText = document.getElementById('bridgeCaptionText');
+    const bridgeSubText = document.getElementById('bridgeSubText');
+    const dropZone = document.getElementById('dropZone');
+    const multiFileInput = document.getElementById('multiFileInput');
+    const progressBox = document.getElementById('progressBox');
+    const pFileName = document.getElementById('pFileName');
+    const pPercent = document.getElementById('pPercent');
+    const pBar = document.getElementById('pBar');
+    const pSpeed = document.getElementById('pSpeed');
+    const pEta = document.getElementById('pEta');
+    const clipText = document.getElementById('clipText');
+    const btnSendClip = document.getElementById('btnSendClip');
+    const btnGetClip = document.getElementById('btnGetClip');
+    const pcFilesContainer = document.getElementById('pcFilesContainer');
+
+    function showToast(msg, isOk = true) {
+      const toast = document.getElementById('toastEl');
+      const toastMsg = document.getElementById('toastMsg');
+      toastMsg.textContent = msg;
+      toast.className = 'toast show ' + (isOk ? 'ok' : 'err');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
+    // ── PIN Boxes UI ──────────────────────────────────────────────────
+    const boxes = Array.from({length:6}, (_, i) => document.getElementById('pbox' + i));
+    function updatePinBoxes(val) {
+      boxes.forEach((b, i) => {
+        const char = val[i];
+        b.textContent = char ? '•' : '·';
+        b.className = 'pin-digit-box' + (char ? ' filled' : '') + (i === val.length ? ' active' : '');
+      });
+      btnConnect.disabled = val.length !== 6;
+    }
+
+    function focusPinInput() {
+      hiddenPinInput.focus();
+    }
+    document.getElementById('pinDisplayBoxes').addEventListener('click', focusPinInput);
+    hiddenPinInput.addEventListener('input', () => {
+      const v = hiddenPinInput.value.replace(/\D/g, '').slice(0, 6);
+      hiddenPinInput.value = v;
+      updatePinBoxes(v);
+    });
+
+    // Auto focus
+    setTimeout(focusPinInput, 300);
+
+    // ── Reconnection Wrapper (Resuelve el Punto 2 para archivos grandes) ─
+    async function establishConnection(pinToUse) {
+      if (!host || !hash) {
+        throw new Error('Falta el host o la huella del certificado en la URL. Escanea de nuevo el QR.');
+      }
+      if (client) {
+        try { client.close(); } catch (_) {}
+        client = null;
+      }
+      client = await connectAetherDrop({
+        host,
+        hash,
+        pin: pinToUse,
+        deviceId
+      });
+      savedPin = pinToUse;
+      return client;
+    }
+
+    async function safeRequest(op, data, body = null) {
+      const maxAttempts = 3;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          if (!client) {
+            await establishConnection(savedPin);
+          }
+          return await client.request(op, data, body);
+        } catch (err) {
+          const errStr = String(err?.message || err);
+          const isConnDropped = errStr.includes('WebTransport connection is not open') ||
+                                errStr.includes('closed') ||
+                                errStr.includes('aborted') ||
+                                errStr.includes('Timed out');
+          if (isConnDropped && attempt < maxAttempts) {
+            console.warn(`[AetherDrop] Conexión WebTransport cerrada, reanudando (intento ${attempt} de ${maxAttempts})…`);
+            client = null;
+            await new Promise(r => setTimeout(r, 600 * attempt));
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
+
+    // ── Connect Button ────────────────────────────────────────────────
+    btnConnect.addEventListener('click', async () => {
+      const pin = hiddenPinInput.value.trim();
+      if (pin.length !== 6) return;
+      btnConnect.disabled = true;
+      pinErrorMsg.style.display = 'none';
+      statusText.textContent = 'Conectando…';
+
+      try {
+        await establishConnection(pin);
+        statusBadge.className = 'status-badge connected';
+        statusText.textContent = 'Conectado';
+        pinSection.style.display = 'none';
+        appSection.style.display = 'flex';
+        showToast('¡Conectado de forma segura con el PC!');
+        await loadPcFiles();
+      } catch (err) {
+        pinErrorMsg.textContent = String(err?.message || err);
+        pinErrorMsg.style.display = 'block';
+        statusBadge.className = 'status-badge';
+        statusText.textContent = 'Error';
+        btnConnect.disabled = false;
+      }
+    });
+
+    hiddenPinInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && hiddenPinInput.value.length === 6) {
+        btnConnect.click();
+      }
+    });
+
+    // ── File Upload with Multi-file, Resume & Keep-alive ───────────────
+    dropZone.addEventListener('click', () => multiFileInput.click());
+
+    multiFileInput.addEventListener('change', async () => {
+      const files = Array.from(multiFileInput.files || []);
+      if (!files.length) return;
+      multiFileInput.disabled = true;
+      dropZone.style.pointerEvents = 'none';
+      dropZone.style.opacity = '0.6';
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        try {
+          await uploadSingleFile(file, i + 1, files.length);
+        } catch (err) {
+          showToast(`Error al subir ${file.name}: ${err.message}`, false);
+        }
+      }
+
+      multiFileInput.value = '';
+      multiFileInput.disabled = false;
+      dropZone.style.pointerEvents = 'auto';
+      dropZone.style.opacity = '1';
+      progressBox.classList.remove('active');
+      bridgeElement.classList.remove('transferring');
+      bridgeCaptionText.textContent = 'Dispositivo vinculado · Listo';
+    });
+
+    async function uploadSingleFile(file, fileIndex, totalFiles) {
+      if (file.size === 0 || file.size > 2 * 1024 * 1024 * 1024) {
+        throw new Error('El archivo debe tener entre 1 B y 2 GB.');
+      }
+
+      progressBox.classList.add('active');
+      bridgeElement.classList.add('transferring');
+      pFileName.textContent = (totalFiles > 1 ? `(${fileIndex}/${totalFiles}) ` : '') + file.name;
+      pPercent.textContent = '0%';
+      pBar.style.width = '0%';
+      pSpeed.textContent = 'Iniciando…';
+      pEta.textContent = '';
+      bridgeCaptionText.textContent = `Enviando ${file.name}…`;
+
+      // Iniciar transferencia en el PC
+      const start = await safeRequest('upload.start', { filename: file.name, size_bytes: file.size });
+      const transferId = start.transfer_id;
+      const chunkSize = start.chunk_size;
+
+      const wholeHash = window.sha256.create();
+      const startTime = performance.now();
+      let lastReport = startTime;
+      let sentBytes = 0;
+
+      // Hasta MAX_IN_FLIGHT bloques viajan a la vez: mientras el PC verifica y escribe el bloque N,
+      // el bloque N+1 ya se está enviando. Antes cada bloque esperaba a la respuesta del anterior,
+      // así que la red quedaba parada durante el hash/escritura del servidor.
+      // El servidor confirma los bloques siempre en orden; el hash total se calcula aquí en orden.
+      const MAX_IN_FLIGHT = 2;
+      const inFlight = new Set();
+      let failure = null;
+
+      const reportProgress = (force) => {
+        const now = performance.now();
+        const percent = Math.floor((sentBytes / file.size) * 100);
+        pPercent.textContent = percent + '%';
+        pBar.style.width = percent + '%';
+        if (force || now - lastReport >= 300) {
+          const totalSec = Math.max(0.01, (now - startTime) / 1000);
+          const avgMBps = (sentBytes / totalSec) / 1_000_000;
+          pSpeed.textContent = avgMBps.toFixed(1) + ' MB/s';
+          const remainingSec = avgMBps > 0 ? Math.ceil((file.size - sentBytes) / (avgMBps * 1_000_000)) : 0;
+          pEta.textContent = remainingSec > 0 ? `Quedan ~${remainingSec}s` : 'Finalizando…';
+          lastReport = now;
+        }
+      };
+
+      const sendChunk = async (index, bytes, chunkHash) => {
+        const t0 = performance.now();
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await safeRequest('upload.chunk', { transfer_id: transferId, chunk_index: index, sha256: chunkHash }, bytes);
+            break;
+          } catch (err) {
+            // El PC limita las operaciones simultáneas: reintenta con una pausa corta.
+            if (String(err?.message || err).includes('too_many_requests') && attempt < 8) {
+              await new Promise(r => setTimeout(r, 50 * attempt));
+              continue;
+            }
+            throw err;
+          }
+        }
+        sentBytes += bytes.length;
+        const ms = performance.now() - t0;
+        console.log(`[AetherDrop PERF] chunk=${index} bytes=${bytes.length} roundtrip_ms=${ms.toFixed(0)} (${(bytes.length / 1e6 / (ms / 1000)).toFixed(1)} MB/s por bloque)`);
+        reportProgress(sentBytes === file.size);
+      };
+
+      let offset = 0;
+      let chunkIndex = 0;
+      while (offset < file.size) {
+        if (failure) break;
+        const sliceEnd = Math.min(file.size, offset + chunkSize);
+        const bytes = new Uint8Array(await file.slice(offset, sliceEnd).arrayBuffer());
+
+        // Hash total incremental (en orden) y hash del bloque con SubtleCrypto (nativo).
+        wholeHash.update(bytes);
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const chunkHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+
+        // Espera hueco libre en la ventana antes de lanzar otro bloque.
+        while (inFlight.size >= MAX_IN_FLIGHT && !failure) {
+          await Promise.race(inFlight);
+        }
+        if (failure) break;
+
+        const task = sendChunk(chunkIndex, bytes, chunkHash)
+          .catch(err => { failure = failure || err; })
+          .finally(() => inFlight.delete(task));
+        inFlight.add(task);
+
+        offset += bytes.length;
+        chunkIndex += 1;
+      }
+      await Promise.all(inFlight);
+      if (failure) throw failure;
+
+      // Finalizar transferencia y verificar integridad
+      pEta.textContent = 'Verificando en disco…';
+      const expectedSha256 = wholeHash.hex();
+      await safeRequest('upload.finish', {
+        transfer_id: transferId,
+        sha256: expectedSha256
+      });
+
+      if (navigator.vibrate) {
+        try { navigator.vibrate([100, 50, 100]); } catch (_) {}
+      }
+
+      showToast(`¡${file.name} enviado y verificado con éxito!`);
+      await loadPcFiles();
+    }
+
+    // ── Clipboard Sync ────────────────────────────────────────────────
+    btnSendClip.addEventListener('click', async () => {
+      const text = clipText.value;
+      if (!text) return;
+      const bytes = new TextEncoder().encode(text);
+      if (bytes.byteLength > 1024 * 1024) {
+        showToast('El texto supera 1 MB.', false);
+        return;
+      }
+      try {
+        await safeRequest('clipboard.set', undefined, bytes);
+        showToast('¡Texto enviado al ordenador!');
+      } catch (e) {
+        showToast('Error al enviar texto: ' + e.message, false);
+      }
+    });
+
+    btnGetClip.addEventListener('click', async () => {
+      try {
+        const res = await safeRequest('clipboard.get');
+        if (res && res.payload) {
+          clipText.value = new TextDecoder('utf-8').decode(res.payload);
+          showToast('Portapapeles recibido del PC');
+        }
+      } catch (e) {
+        showToast('Error al leer portapapeles: ' + e.message, false);
+      }
+    });
+
+    // ── PC Files List ─────────────────────────────────────────────────
+    async function loadPcFiles() {
+      try {
+        const files = await safeRequest('files.list');
+        if (!Array.isArray(files) || !files.length) {
+          pcFilesContainer.innerHTML = '<div style="font-size:11px;color:var(--ink3);text-align:center;padding:12px 0">No hay archivos compartidos por el PC.</div>';
+          return;
+        }
+        pcFilesContainer.innerHTML = '';
+        files.forEach(f => {
+          const row = document.createElement('div');
+          row.className = 'pc-file-item';
+          row.innerHTML = `
+            <span class="pc-file-name" title="${f.name}">${f.name}</span>
+            <button class="btn-dl" data-id="${f.id}" data-name="${f.name}">Descargar</button>
+          `;
+          row.querySelector('.btn-dl').addEventListener('click', () => downloadPcFile(f.id, f.name));
+          pcFilesContainer.appendChild(row);
+        });
+      } catch (_) {}
+    }
+
+    async function downloadPcFile(fileId, fileName) {
+      try {
+        showToast(`Iniciando descarga de ${fileName}…`);
+        const info = await safeRequest('download.start', { file_id: fileId });
+        let offset = 0;
+        const chunks = [];
+        while (offset < info.size_bytes) {
+          const length = Math.min(info.chunk_size, info.size_bytes - offset);
+          const part = await safeRequest('download.read', { ticket: info.ticket, offset, length });
+          chunks.push(part.payload);
+          offset += part.payload.length;
+        }
+        const blob = new Blob(chunks, { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+        showToast(`¡${fileName} descargado!`);
+      } catch (err) {
+        showToast(`Fallo al descargar: ${err.message}`, false);
+      }
+    }
+
+    // Auto-refresh lista cada 8s si está conectado
+    setInterval(() => {
+      if (client && savedPin) loadPcFiles();
+    }, 8000);
+  </script>
+</body>
+</html>

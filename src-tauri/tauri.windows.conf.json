@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "title": "AetherDrop",
+        "width": 1060,
+        "height": 900,
+        "minWidth": 720,
+        "minHeight": 680,
+        "resizable": true,
+        "decorations": false,
+        "center": true
+      }
+    ]
+  }
+}

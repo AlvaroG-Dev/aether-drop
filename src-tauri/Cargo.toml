@@ -20,7 +20,11 @@ tauri-plugin-notification = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
 axum = { version = "0.7", features = ["multipart", "json"] }
+bytes = "1"
+fs2 = "0.4"
+sha2 = "0.10"
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 local-ip-address = "0.6"
 qrcode = "0.14"
@@ -31,4 +35,15 @@ uuid = { version = "1.0", features = ["v4"] }
 futures-util = "0.3"
 mdns-sd = "0.11"
 arboard = "3.4"
+wtransport = { version = "0.7.2", features = ["self-signed", "quinn"] }
 rand = "0.8"
+socket2 = "0.5"
+
+# `tauri dev` builds dependencies unoptimized by default, which makes SHA-256 (sha2) and the
+# QUIC/TLS stack ~20x slower (8 MiB hashed in ~110-170 ms instead of ~8 ms). Optimize all
+# dependencies in dev builds while keeping the app crate itself fast to recompile.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1

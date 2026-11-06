@@ -1,7 +1,87 @@
-# Tauri + Vanilla
+# AetherDrop
 
-This template should help get you started developing with Tauri in vanilla HTML, CSS and Javascript.
+**Transferencia local entre ordenador y móvil, sin nube.**
 
-## Recommended IDE Setup
+AetherDrop es un prototipo de escritorio construido con Rust + Tauri 2 y Axum. El ordenador sirve una aplicación web móvil en la red local y permite compartir archivos desde y hacia el PC.
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+> **Estado: prototipo de desarrollo. No uses esta versión para información confidencial.** El transporte sigue usando HTTP sin cifrar. Ni el PIN, ni los tokens, ni SHA-256 convierten una conexión HTTP en una conexión cifrada o autenticada frente a un atacante activo de la red. No se debe anunciar como cifrado de extremo a extremo.
+
+## Implementado
+
+### Transferencias y almacenamiento
+- Subidas en streaming: los archivos no se cargan completos en la RAM.
+- Cada archivo se escribe en un temporal aleatorio situado en la misma carpeta de destino.
+- Antes de publicarlo, el servidor sincroniza el temporal, calcula SHA-256 sobre el flujo recibido y vuelve a leer el temporal en bloques de 128 KiB. Comprueba que tamaño y hash de los bytes guardados coinciden con los del flujo.
+- Publicación sin sobrescritura mediante un enlace duro atómico. Si el nombre ya existe, la operación devuelve conflicto; no reemplaza el archivo anterior.
+- Subidas reanudables en bloques de 8 MiB. El servidor confirma el índice y SHA-256 de cada bloque, guarda solo el siguiente bloque esperado y comprueba el hash del archivo completo antes de publicarlo.
+- Los reintentos consultan el estado del servidor para no duplicar bloques aceptados cuya respuesta se perdió. El cliente verifica que los bloques anteriores correspondan al archivo seleccionado antes de reanudar y compara el hash final completo.
+- La transferencia temporal se puede cancelar. Revocar un dispositivo o caducar una sesión cancela sus transferencias pendientes; los errores transitorios permiten reanudar durante un máximo de dos horas mientras el servidor siga en ejecución.
+- Descargas por streaming; el servidor no hace `read()` del archivo entero.
+- Tickets de descarga aleatorios, de un solo uso, vinculados al dispositivo, archivo y sesión, con expiración de 60 segundos.
+- Temporales cancelados/fallidos se limpian cuando termina la operación. Los temporales abandonados con más de 24 horas se limpian al arrancar, al cambiar de carpeta y en tareas periódicas.
+
+### Límites actuales
+- Máximo de 2 GiB por archivo.
+- Bloques de 8 MiB, hasta tres escrituras de bloques simultáneas y hasta tres descargas simultáneas.
+- Máximo de 24 transferencias pendientes en el servidor y cuatro pendientes por dispositivo.
+- El cliente permite elegir hasta 32 archivos en una selección; se transfieren secuencialmente y se comunica el resultado individual y las transferencias parciales.
+- Máximo de 256 archivos en la lista «Archivos para enviar».
+- Portapapeles limitado a 1 MiB de texto.
+- Las peticiones de autenticación tienen limitación de intentos por IP y los bloqueos y sesiones caducadas se limpian periódicamente.
+
+Estos valores son límites defensivos del prototipo, no cuotas de almacenamiento ni garantía contra llenar un disco.
+
+### Sesiones y servidor
+- PIN de seis dígitos, tokens de sesión aleatorios con duración de 12 horas, y cancelación de sesiones al revocar un dispositivo.
+- La revocación cancela transferencias activas; las subidas comprueban cancelación y expiración mientras leen el cuerpo.
+- El límite de intentos de PIN es por IP (10 intentos en la ventana de un minuto, seguido de un bloqueo temporal).
+- Se comprueban los encabezados Host y Origin para reducir accesos por DNS rebinding y peticiones cruzadas desde páginas web.
+- El servidor comunica fallos al abrir el puerto, deja de anunciar mDNS si no puede enlazar el puerto y tiene un cierre ordenado.
+- Los errores del portapapeles del sistema se devuelven explícitamente; la aplicación no responde con éxito si el portapapeles del sistema ha fallado.
+- La interfaz móvil y el escritorio cargan JavaScript externo. Se han añadido políticas CSP y encabezados de seguridad básicos.
+
+## Limitaciones de seguridad conocidas
+
+- **El transporte sigue usando HTTP en el puerto 8080 y escucha en las interfaces de red locales.** El token Bearer, el PIN y el contenido pueden ser observados o manipulados por un atacante capaz de interceptar la red.
+- El cliente compara el SHA-256 completo del archivo seleccionado con el hash final devuelto por el servidor. El servidor valida cada bloque y vuelve a leer el temporal antes de publicarlo. Esto detecta cambios accidentales y evita reanudar con un archivo diferente, pero no autentica el contenido frente a un atacante activo de red mientras el transporte siga usando HTTP.
+- La comprobación Host/Origin reduce algunas rutas de ataque del navegador, pero no es sustituto de TLS.
+- Los tickets de descarga evitan poner el token Bearer en el enlace; siguen viajando por HTTP y su protección depende de la seguridad de esa conexión.
+- Los bloqueos de sesión son en memoria y desaparecen al reiniciar. No hay persistencia de dispositivos ni recuperación de transferencias interrumpidas.
+- La publicación mediante enlaces duros atómicos requiere que el sistema de archivos de destino soporte hard links. Si no lo soporta, la transferencia falla de forma explícita en vez de degradar a una publicación con riesgo de sobrescritura.
+- El proyecto no ha completado una auditoría de seguridad ni pruebas de transferencia entre dispositivos reales. No expongas el puerto 8080 a Internet ni uses esta versión con archivos sensibles.
+
+El cliente WebTransport experimental añade una comprobación explícita de identidad mediante la huella SHA-256 del certificado que la aplicación de escritorio muestra en el QR, antes de enviar el PIN. Eso permite al navegador comprobar que se conecta al certificado esperado, pero no sustituye pruebas de interoperabilidad ni una revisión de seguridad. No debe afirmarse que el producto completo está verificado como seguro hasta probar el canal en navegadores y dispositivos reales.
+
+## Cliente WebTransport experimental
+
+Esta rama incluye un cliente estático en `docs/aetherdrop-client.html` que intenta conectar directamente con el PC por WebTransport/HTTP/3 sobre UDP, usando la huella SHA-256 del certificado efímero antes de enviar el PIN. El cliente incluye lista de archivos, subida por bloques, descarga y portapapeles, y no utiliza HTTP como alternativa.
+
+**Esto aún no equivale a una versión verificada para uso real.** La CI comprueba sintaxis, tests de unidad, compilación y Clippy, pero no ejecuta un navegador móvil real ni valida el comportamiento de la red local, permisos del navegador, firewall/UDP, suspensión del móvil o transferencias grandes. El cliente es experimental; no lo uses para información confidencial ni interpretes el pinning como una auditoría de seguridad completa. La API HTTP/8080 heredada sigue existiendo y no debe considerarse cifrada.
+
+El workflow de GitHub Pages despliega los archivos estáticos de esta rama cuando cambian el cliente o sus dependencias. Esto no publica cambios de la aplicación de escritorio ni fusiona la rama en `master`.
+
+## Desarrollo
+
+Instala las dependencias del sistema para [Tauri 2](https://v2.tauri.app/start/prerequisites/), Rust y Node.js 22.
+
+```bash
+npm install
+npm run tauri dev
+```
+
+Comprobaciones locales equivalentes a CI:
+
+```bash
+node --check src/app.js
+node --check src-tauri/src/mobile.js
+cargo fmt --manifest-path src-tauri/Cargo.toml --all
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml
+```
+
+El workflow de GitHub Actions ejecuta estas comprobaciones de JavaScript y Rust en Ubuntu, incluidos tests, compilación y Clippy. Una CI correcta no sustituye las pruebas de interfaz y transferencia en Windows, Linux y teléfonos físicos.
+
+## Contribuir
+
+Al informar de un fallo, incluye sistema operativo, navegador/teléfono, tamaño del archivo y pasos para reproducirlo. No adjuntes archivos privados, PIN, tokens ni datos sensibles.
